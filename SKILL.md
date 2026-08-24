@@ -3,10 +3,10 @@ name: session-fork
 slug: session-fork
 displayName: WorkBuddy 会话分叉（打分支）
 description: 把当前（或指定）WorkBuddy 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 1.0.4
+version: 1.1.1
 author: OfferKuai (Offer快) Team
 license: MIT
-tags: [workbuddy, session, fork, conversation, 会话分叉, 打分支, 办公效率]
+tags: [workbuddy, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
 agent_created: true
 ---
 
@@ -26,10 +26,20 @@ agent_created: true
 
 ## 触发条件
 
-用户明确要求"打分支 / 会话分叉 / 复制对话 / 分支会话 / split session / fork session"。两种模式：
+用户**明确要求创建/执行**"打分支 / 会话分叉 / 复制对话 / 分支会话 / split session / fork session / 新建分支 / 从这里分叉"。两种模式：
 
 - **默认模式（推荐，无需额外信息）**：用户只说"打分支"或"打分支，命名『X』"——**截断点自动 = 上一轮对话的输出结束**（用户发起打分支之前，最后一条完整 assistant 回复的末尾）。这是本技能的默认行为，形成肌肉记忆，不用每次重新思考。
 - **指定模式**：用户给出拆分点特征文本（如"从『下一步你可以选』那条回复作为拆分点"）或行号——按指定点截断。
+
+### 排除（不触发执行，只回答问题）
+
+以下场景用户只是**咨询/了解**，不应执行分叉操作：
+
+- "什么是分叉 / 分叉有什么用 / 怎么用分叉功能" → 解释功能，不执行
+- "帮我看看当前有没有分支 / 列出分支" → 用 `--list` 查询，不创建
+- "这个对话太长了" / "对话需要整理" → 不自动推断要分叉，询问用户意图
+- "能不能回到之前的某个点" → 解释可以用分叉实现，询问是否执行
+- 用户在讨论分叉的概念/原理/对比 → 只回答，不执行
 
 ## 工作流程
 
@@ -51,13 +61,20 @@ agent_created: true
 ### Step 3 — 执行创建（用脚本，勿手写）
 
 ```bash
-# 默认模式：截断到上一轮对话输出结束
+# 默认模式：截断到上一轮对话输出结束，名称自动从主题生成
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --session current
+
+# 默认模式 + 自定义名称
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
   --session current --name "<分支名>"
 
 # 指定模式：按特征文本截断
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
   --session current --match "<拆分点特征文本>" --name "<分支名>"
+
+# 查询当前工作区的所有分支
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --list
 ```
 
 脚本自动完成：备份（jsonl + db 到 `~/.workbuddy/backups/<时间戳>/`）→ 定位截断点 → 截取 1..截断点 → 顶层 `sessionId` 改为新 UUID → **嵌套字段旧 id 全量替换** → db `sessions` 插入新行（复制源行，改 id/custom_title/status=terminated/时间戳）→ 验证。
@@ -66,10 +83,36 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
 
 ### Step 4 — 验证与汇报
 
-脚本自带验证（行数/解析/sessionId 一致性/零残留/末条完整）。汇报需给出：
-- 新分支会话 id + custom_title + status；
-- 截断点行号与末条内容确认（默认模式注明"上一轮输出结束"）；
-- 备份路径。
+脚本自带验证（行数/解析/sessionId 一致性/零残留/末条完整）。汇报**必须使用以下固定模板**：
+
+```
+✅ 分支创建完成
+
+📋 分支信息
+- 分支 ID：<new-session-id>
+- 名称：<custom_title>
+- 截断位置：第 N 行 / 共 M 行（默认模式注明"上一轮输出结束"）
+- 分支行数：N 行
+
+📦 原会话不受影响
+- 原会话 ID：<src_id>（继续正常使用）
+
+⚠️ 请重启 WorkBuddy 以在侧边栏看到新分支
+- macOS：⌘Q 退出后重新打开，或终端执行 `open -a WorkBuddy`
+
+💡 下一步
+- 重启后在侧边栏选择新分支继续讨论
+- 或在当前对话继续（分支已独立保存，不会丢失）
+```
+
+查询分支时（`--list`）使用：
+
+```
+📂 当前工作区的分支列表
+- <id> | <名称> | <状态> | <创建时间>
+- ...
+（共 N 个分支，无分支时提示"当前工作区暂无分支"）
+```
 
 ### Step 5 — 记录（可选）
 

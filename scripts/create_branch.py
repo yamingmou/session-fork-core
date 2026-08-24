@@ -39,7 +39,7 @@ import sys
 import time
 import uuid
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
@@ -161,15 +161,104 @@ def locate_split_line(path, match_text=None, line_no=None):
     return cand, n
 
 
+def list_branches(db, cwd=None):
+    """List all branch sessions in the current workspace.
+
+    Branches are identified by custom_title containing '·分支' or '分支·',
+    or by any session whose cwd matches the given workspace.
+    """
+    cur = db.cursor()
+    if cwd:
+        cur.execute(
+            "SELECT id, custom_title, status, created_at, cwd FROM sessions "
+            "WHERE cwd=? ORDER BY created_at DESC",
+            (cwd,),
+        )
+    else:
+        cur.execute(
+            "SELECT id, custom_title, status, created_at, cwd FROM sessions "
+            "ORDER BY created_at DESC"
+        )
+    rows = cur.fetchall()
+    branches = []
+    for r in rows:
+        title = r[1] or ""
+        # Include if title looks like a branch or if explicitly requested
+        if "分支" in title or "·" in title or "fork" in title.lower():
+            ts = r[3]
+            if isinstance(ts, int) and ts > 1e12:
+                ts = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M")
+            elif isinstance(ts, int):
+                ts = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+            branches.append((r[0], title, r[2], ts, r[4]))
+    return branches
+
+
+def extract_topic_hint(lines, last_user_line=None):
+    """Extract a short topic hint from the last user message for default branch name."""
+    if last_user_line is None:
+        # Find last user message
+        for i in range(len(lines) - 1, -1, -1):
+            try:
+                o = json.loads(lines[i])
+                if o.get("type") == "message" and o.get("role") == "user":
+                    last_user_line = i
+                    break
+            except Exception:
+                continue
+    if last_user_line is None:
+        return ""
+    try:
+        o = json.loads(lines[last_user_line])
+        for c in o.get("content", []) or []:
+            if isinstance(c, dict) and c.get("type") == "input_text":
+                text = c.get("text", "").strip()
+                if text:
+                    # Skip system-like content
+                    if text.startswith("<") or text.startswith("<!--"):
+                        continue
+                    # Take first line, skip if too short or looks like code/command
+                    first_line = text.split("\n")[0].strip()
+                    if len(first_line) < 2 or first_line.startswith(("!", "/", "#", "```")):
+                        continue
+                    if len(first_line) > 15:
+                        first_line = first_line[:15] + "…"
+                    return first_line
+    except Exception:
+        pass
+    return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-    ap.add_argument("--session", required=True, help="source session id, or 'current'")
+    ap.add_argument("--session", help="source session id, or 'current'")
     ap.add_argument("--match", help="split-point text within the final assistant reply")
     ap.add_argument("--line", type=int, help="exact 1-based split line (alternative to --match)")
-    ap.add_argument("--name", default="分支", help="custom_title suffix for the branch")
+    ap.add_argument("--name", default=None, help="custom_title suffix for the branch (default: auto from topic)")
     ap.add_argument("--dry-run", action="store_true", help="only locate & report, write nothing")
+    ap.add_argument("--list", action="store_true", dest="list_branches", help="list all branches in current workspace")
     args = ap.parse_args()
+
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+
+    # --list mode
+    if args.list_branches:
+        cwd = os.environ.get("WORKBUDDY_CWD")
+        branches = list_branches(db, cwd)
+        if not branches:
+            print("📂 当前工作区暂无分支")
+        else:
+            print(f"📂 当前工作区的分支列表（共 {len(branches)} 个）")
+            for bid, title, status, ts, bcwd in branches:
+                print(f"  - {bid[:12]}… | {title} | {status} | {ts}")
+        db.close()
+        return
+
+    if not args.session:
+        ap.error("--session is required (or use --list)")
+
     # default mode: no --match / --line -> truncate at previous turn's output end
 
     db = sqlite3.connect(DB_PATH)
@@ -195,9 +284,16 @@ def main():
         how = "default (previous turn's output end)"
     new_id = str(uuid.uuid4())
 
+    # Auto-generate branch name from topic hint if not provided
+    branch_name = args.name
+    if branch_name is None:
+        all_lines = open(transcript).read().splitlines()
+        hint = extract_topic_hint(all_lines)
+        branch_name = f"分支·{hint}" if hint else "分支"
+
     print(f"Source   : {src_id}  ({transcript})")
     print(f"Split    : line {cut} / {total}  ({how})")
-    print(f"Branch   : {new_id}  name={args.name!r}")
+    print(f"Branch   : {new_id}  name={branch_name!r}")
     ts = time.strftime("%Y%m%d-%H%M%S")
     if args.dry_run:
         print(f"DRY RUN — nothing written. (Would back up to {os.path.join(BACKUPS_DIR, ts)})")
@@ -231,7 +327,7 @@ def main():
     now_ms = int(time.time() * 1000)
     vals = {c: src_row[c] for c in cols}
     vals["id"] = new_id
-    vals["custom_title"] = args.name
+    vals["custom_title"] = branch_name
     vals["status"] = "terminated"
     vals["created_at"] = now_ms
     vals["updated_at"] = now_ms
@@ -273,7 +369,8 @@ def main():
         sys.exit(1)
     print(f"Verify   : OK ({cut} lines, sessionId consistent, zero residue, tail complete)")
     print(f"NEW SESSION ID: {new_id}")
-    print(f"custom_title: {args.name}  | status: terminated")
+    print(f"custom_title: {branch_name}  | status: terminated")
+    print(f"ACTION   : ⚠️ 请重启 WorkBuddy 以在会话列表中看到新分支")
 
 
 if __name__ == "__main__":
