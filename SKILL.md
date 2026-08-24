@@ -3,7 +3,7 @@ name: session-fork
 slug: session-fork
 displayName: WorkBuddy 会话分叉（打分支）
 description: 把当前（或指定）WorkBuddy 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 1.1.1
+version: 1.2.0
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
@@ -75,9 +75,13 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
 
 # 查询当前工作区的所有分支
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --list
+
+# 修复一个被 WorkBuddy 追加了多余消息的分支
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --fix <分支会话ID>
 ```
 
-脚本自动完成：备份（jsonl + db 到 `~/.workbuddy/backups/<时间戳>/`）→ 定位截断点 → 截取 1..截断点 → 顶层 `sessionId` 改为新 UUID → **嵌套字段旧 id 全量替换** → db `sessions` 插入新行（复制源行，改 id/custom_title/status=terminated/时间戳）→ 验证。
+脚本自动完成：备份（jsonl + db 到 `~/.workbuddy/backups/<时间戳>/`）→ 定位截断点 → 截取 1..截断点 → 顶层 `sessionId` 改为新 UUID → **嵌套字段旧 id 全量替换** → db `sessions` 插入新行（复制源行，改 id/custom_title/status=terminated/时间戳）→ 验证 → **文件锁为只读（0444）防止 WorkBuddy 追加消息**。
 
 先跑 `--dry-run` 确认截断点定位正确，再正式执行（推荐）。
 

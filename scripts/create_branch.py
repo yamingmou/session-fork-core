@@ -39,7 +39,7 @@ import sys
 import time
 import uuid
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
@@ -238,6 +238,7 @@ def main():
     ap.add_argument("--name", default=None, help="custom_title suffix for the branch (default: auto from topic)")
     ap.add_argument("--dry-run", action="store_true", help="only locate & report, write nothing")
     ap.add_argument("--list", action="store_true", dest="list_branches", help="list all branches in current workspace")
+    ap.add_argument("--fix", metavar="SESSION_ID", help="re-truncate a branch to its correct cut point")
     args = ap.parse_args()
 
     db = sqlite3.connect(DB_PATH)
@@ -256,8 +257,64 @@ def main():
         db.close()
         return
 
-    if not args.session:
-        ap.error("--session is required (or use --list)")
+    if not args.session and not args.fix:
+        ap.error("--session is required (or use --list or --fix)")
+
+    # --fix mode: re-truncate a branch to its correct cut point
+    if args.fix:
+        fix_session_id = args.fix
+        fix_path, fix_slug = find_transcript(fix_session_id)
+        if not fix_path:
+            raise SystemExit(f"Transcript not found for {fix_session_id}")
+
+        # Read the DB to get the source session from the parentSession or cwd
+        db = sqlite3.connect(DB_PATH)
+        db.row_factory = sqlite3.Row
+        cur = db.cursor()
+
+        # The branch file may have extra lines appended by WorkBuddy after creation.
+        # Strategy: find the first user/message that appears AFTER the cut point.
+        # The cut point = locate_last_reply applied to the current (overgrown) file,
+        # but we need the ORIGINAL cut point. Since the branch's last legitimate
+        # assistant reply should be the one right before the first "post-creation" user
+        # message, we detect this by looking for messages that reference the branch's
+        # own session ID in a way that indicates they were created after the branch.
+
+        # Actually simpler: the branch should end at the last assistant message
+        # that has a non-empty output_text and is followed by a user message that
+        # was NOT part of the original cut. We detect by checking if there are
+        # messages after what locate_last_reply would find.
+
+        cut, total = locate_last_reply(fix_path)
+        lines = open(fix_path).read().splitlines()
+        print(f"Source   : {fix_session_id}")
+        print(f"Current  : {total} lines")
+        print(f"Target   : {cut} lines (locate_last_reply)")
+        if cut >= total:
+            print("Already correct — no fix needed.")
+            db.close()
+            return
+
+        # Backup
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        backup_dir = os.path.join(BACKUPS_DIR, ts)
+        os.makedirs(backup_dir, exist_ok=True)
+        shutil.copy2(fix_path, os.path.join(backup_dir, os.path.basename(fix_path)))
+        print(f"Backup   : {backup_dir}")
+
+        # Re-truncate
+        truncated = lines[:cut]
+        with open(fix_path, "w") as f:
+            f.write("\n".join(truncated) + "\n")
+        # Re-lock
+        os.chmod(fix_path, 0o444)
+
+        # Re-verify
+        check = open(fix_path).read().splitlines()
+        print(f"Verify   : {len(check)} lines (was {total}, removed {total - len(check)})")
+        print(f"Locked   : {os.path.basename(fix_path)} set to read-only (0444)")
+        db.close()
+        return
 
     # default mode: no --match / --line -> truncate at previous turn's output end
 
@@ -322,6 +379,10 @@ def main():
         with open(dst, "w") as f:
             f.write(raw)
         print(f"Note     : replaced {src_id}->{new_id} inside nested fields")
+
+    # Lock the file to prevent WorkBuddy from appending more messages
+    os.chmod(dst, 0o444)
+    print(f"Locked   : {os.path.basename(dst)} set to read-only (0444)")
 
     # Insert DB row
     now_ms = int(time.time() * 1000)
