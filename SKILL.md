@@ -3,7 +3,7 @@ name: session-fork
 slug: session-fork
 displayName: WorkBuddy 会话分叉（打分支）
 description: 把当前（或指定）WorkBuddy 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 1.2.0
+version: 1.3.0
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
@@ -52,11 +52,35 @@ agent_created: true
 
 ### Step 2 — 确认截断点（默认规则优先，勿跳过）
 
-**默认规则：每个分支的截断点 = 上一轮对话的输出结束。**
-- 语义：用户发起"打分支"时，分支应精确收尾在**该指令之前最后一条完整 assistant 回复**的末尾（`output_text` 完整输出结束）——即用户最后一条 user 消息之前的最后一条 assistant 回复；
-- 实现：脚本默认模式（不带 `--match`/`--line`）自动定位，无需人工找行号；
-- **指定覆盖**：仅当用户明确给出拆分点特征文本时才用 `--match`（取最后一条匹配的 assistant 回复）；给出行号才用 `--line`；
-- **边界校验**：截断行的下一行必须是新的 user 消息或 EOF——否则截断点落在未完成的回复中间，分支末条会是残缺消息（默认模式天然满足：截断点紧邻最后一条 user 消息之前）。
+**⚠️ 最高优先级规则：用户说了断点 → 必须用 `--match` 或 `--line`，绝对不能用默认模式！**
+
+默认模式只在用户**完全没提断点**（只说"打分支"）时才用。一旦用户描述了任何断点信息（"截断到 XXX"、"从 XXX 之前分叉"、"到 XXX 产生处"），就必须用指定模式。
+
+**三种场景的处理方式：**
+
+| 用户说的 | 用什么 | 怎么做 |
+|---|---|---|
+| "打分支"（没提断点） | 默认模式 | 脚本自动定位最后一条 assistant 回复 |
+| "截断到这条回复" + 提供了请求ID | `--request-id` | **最精确**，直接匹配 conversationRequestId |
+| "截断到 XXX" | `--match "XXX"` | 取最后一条包含 XXX 的 assistant 回复 |
+| "截断到 XXX 产生处" | `--line N` | 先用 grep/Read 在源会话 jsonl 中搜索 XXX 所在行号，再用 `--line` |
+
+**⚠️ 获取请求ID的方法（最精确的截断点）：**
+1. 在 WorkBuddy UI 中，点击目标断点处的**助手回复**；
+2. 点击"**复制请求ID**"按钮，得到 JSON 如 `{"traceId":"...","conversationRequestId":"abc123","conversationId":"..."}`;
+3. 用 `--request-id abc123` 截断——**唯一标识一条回复，不会误匹配**。
+
+**⚠️ 关键：当用户口头描述断点但没给精确文本时（如"截断到项目思维规则模板产生处"），必须先在源会话 jsonl 中搜索确认行号，然后用 `--line`，绝不能忽略断点用默认模式。**
+
+**断点定位步骤（指定模式）：**
+1. 在源会话 jsonl 中搜索用户描述的关键词（`grep -n "关键词" <session-id>.jsonl`）；
+2. 确认匹配行是 assistant 消息且有 output_text（必须是完整回复，下一行是 user 消息或 EOF）；
+3. 用 `--line N` 或 `--match "精确文本"` 截断；
+4. 跑 `--dry-run` 验证定位正确后，再正式执行。
+
+**默认模式规则（仅当用户完全没提断点时）：**
+- 截断点 = 上一轮对话的输出结束（用户最后一条 user 消息之前的最后一条完整 assistant 回复）；
+- 脚本自动定位，`--dry-run` 验证即可。
 
 ### Step 3 — 执行创建（用脚本，勿手写）
 
@@ -68,6 +92,10 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
 # 默认模式 + 自定义名称
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
   --session current --name "<分支名>"
+
+# 最精确：按请求ID截断（从 WorkBuddy UI "复制请求ID" 获取）
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --session current --request-id "<conversationRequestId>" --name "<分支名>"
 
 # 指定模式：按特征文本截断
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
@@ -130,12 +158,14 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
 
 ## 关键坑位（实战踩过）
 
-1. **默认截断点 = 上一轮对话输出结束**：用户说"打分支"时不要反问"从哪条回复截断"——默认截到用户最后一条消息之前最后一条完整 assistant 回复的末尾（脚本默认模式自动定位，dry-run 验证即可）。
-2. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `providerData.toolResult.content` / `arguments` / `reasoning` / `rawContent` 里都会出现旧 id（一次实测 87 处）。必须对整行 JSON 做字符串级 `旧id → 新id` 替换，否则分支会"引用"旧会话的工具结果。
-3. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
-4. **快照分支特性**：复制发生在读取时刻，原会话之后的新消息不会进分支——这是正常行为，不是丢数据。
-5. **附属目录 tool-results/**：是运行时输出缓存，jsonl 已内嵌完整 function_call_result，分支**不需要**复制附属目录（或建空目录即可）。
-6. **先备份再动手**：脚本已内置备份到 `~/.workbuddy/backups/<时间戳>/`，不要跳过。
+1. **用户说了断点 → 必须用 --match/--line，绝对不能用默认模式**：默认模式找的是"最后一条 assistant 回复"（文件末尾），不是用户指定的中间位置。曾因用默认模式执行"截断到 XXX 产生处"的指令，导致分支包含了不该有的后续对话（多出 13-22 行），需要事后用 --fix 修复。
+2. **默认截断点 = 上一轮对话输出结束**：用户只说"打分支"没指定断点时，默认截到用户最后一条消息之前最后一条完整 assistant 回复的末尾（脚本默认模式自动定位，dry-run 验证即可）。
+3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `providerData.toolResult.content` / `arguments` / `reasoning` / `rawContent` 里都会出现旧 id（一次实测 87 处）。必须对整行 JSON 做字符串级 `旧id → 新id` 替换，否则分支会"引用"旧会话的工具结果。
+4. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
+5. **WorkBuddy 会追加消息到分支文件**：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.2.0 起脚本会在写入后立即锁文件为只读（0444），已有分支可用 --fix 修复。
+6. **快照分支特性**：复制发生在读取时刻，原会话之后的新消息不会进分支——这是正常行为，不是丢数据。
+7. **附属目录 tool-results/**：是运行时输出缓存，jsonl 已内嵌完整 function_call_result，分支**不需要**复制附属目录（或建空目录即可）。
+8. **先备份再动手**：脚本已内置备份到 `~/.workbuddy/backups/<时间戳>/`，不要跳过。
 
 ## 边界
 

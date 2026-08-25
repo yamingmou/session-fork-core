@@ -39,7 +39,7 @@ import sys
 import time
 import uuid
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
@@ -115,17 +115,32 @@ def locate_last_reply(path):
     )
 
 
-def locate_split_line(path, match_text=None, line_no=None):
+def locate_split_line(path, match_text=None, line_no=None, request_id=None):
     """Return the 1-based line number of the split point.
 
     With match_text: the LAST assistant message whose output_text contains it.
     With line_no: validate the line is an assistant message with output_text.
+    With request_id: the LAST assistant message whose providerData.conversationRequestId matches.
+                     (from WorkBuddy UI "Copy Request ID" button)
     Raises if the candidate line is not the tail boundary (next message must be
     a new user message or EOF) — a split point must be a complete reply.
     """
     lines = open(path).read().splitlines()
     n = len(lines)
-    if line_no is not None:
+    if request_id is not None:
+        cand = None
+        for i, l in enumerate(lines, 1):
+            try:
+                o = json.loads(l)
+            except Exception:
+                continue
+            if o.get("type") != "message" or o.get("role") != "assistant":
+                continue
+            if (o.get("providerData") or {}).get("conversationRequestId") == request_id:
+                cand = i  # keep last match
+        if cand is None:
+            raise SystemExit(f"request_id not found in any assistant reply: {request_id!r}")
+    elif line_no is not None:
         cand = line_no
         if not (1 <= cand <= n):
             raise SystemExit(f"--line {cand} out of range (file has {n} lines)")
@@ -235,6 +250,7 @@ def main():
     ap.add_argument("--session", help="source session id, or 'current'")
     ap.add_argument("--match", help="split-point text within the final assistant reply")
     ap.add_argument("--line", type=int, help="exact 1-based split line (alternative to --match)")
+    ap.add_argument("--request-id", help="conversationRequestId from WorkBuddy UI 'Copy Request ID' (most precise)")
     ap.add_argument("--name", default=None, help="custom_title suffix for the branch (default: auto from topic)")
     ap.add_argument("--dry-run", action="store_true", help="only locate & report, write nothing")
     ap.add_argument("--list", action="store_true", dest="list_branches", help="list all branches in current workspace")
@@ -333,9 +349,9 @@ def main():
     if not transcript:
         raise SystemExit(f"Transcript not found for {src_id} in {PROJECTS_DIR}")
 
-    if args.match or args.line:
-        cut, total = locate_split_line(transcript, args.match, args.line)
-        how = f"match={args.match!r}" if args.match else f"line={args.line}"
+    if args.match or args.line or args.request_id:
+        cut, total = locate_split_line(transcript, args.match, args.line, args.request_id)
+        how = f"match={args.match!r}" if args.match else (f"line={args.line}" if args.line else f"request_id={args.request_id!r}")
     else:
         cut, total = locate_last_reply(transcript)
         how = "default (previous turn's output end)"
