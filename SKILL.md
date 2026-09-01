@@ -3,7 +3,7 @@ name: session-fork
 slug: session-fork
 displayName: WorkBuddy 会话分叉（打分支）
 description: 把当前（或指定）WorkBuddy 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 1.4.2
+version: 2.0.0
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
@@ -19,10 +19,28 @@ agent_created: true
 ## 功能特性
 
 - **零配置默认模式**：用户只说"打分支"即可，截断点自动 = 上一轮对话的输出结束，无需提供任何拆分点文本；
-- **精确指定模式**：按用户引用的某条回复特征文本（`--match`）或行号（`--line`）截断；
+- **精确指定模式**：按用户引用的某条回复特征文本（`--match`）、行号（`--line`）或请求ID（`--request-id`）截断；
 - **存储级复制**：新 jsonl 文件 + sessions 表新行记录，不是"链接/指向"——原会话后续写入不会污染分支；
 - **内置安全**：执行前自动备份（仅源 jsonl），结构化字段级 id 替换（不碰 rawContent），自带完整性校验；
 - **可预览**：`--dry-run` 先确认截断点定位，再正式执行。
+
+## 内部架构（通用引擎）
+
+脚本基于 **fork-core 通用引擎 + 产品 adapter** 设计（内部实现，不影响使用）：
+
+```
+fork_core/                    # 通用引擎（与产品无关）
+├── engine.py                 # 截断点定位/截取/备份/验证/汇报
+├── models.py                 # SessionMeta / ForkResult 契约
+└── adapters/
+    ├── base.py               # TranscriptionAdapter 接口
+    ├── workbuddy.py          # WorkBuddy 适配器（默认）
+    └── claude_code.py        # 另一产品适配器（验证用，不宣传）
+```
+
+- 核心逻辑（默认/--match/--line/--request-id 定位、结构化 id 替换、完整性校验）全部在引擎层，与存储格式无关；
+- 每个产品只实现一个 adapter（4 组方法：定位/消息判定/读写/注册），格式差异被完全隔离；
+- 未来新增产品支持 = 新增一个 adapter 文件，引擎零改动。
 
 ## 触发条件
 
@@ -84,29 +102,36 @@ agent_created: true
 
 ### Step 3 — 执行创建（用脚本，勿手写）
 
+**执行方式（三选一，跨平台）**：
+1. **pip 安装（推荐，跨平台）**：`pip install fork-core` → 全局 `fork` 命令（Windows/macOS/Linux 通用）；
+2. **WorkBuddy 技能目录**：`python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py`（SkillHub 安装后自带）；
+3. **git clone 任意目录**：`python3 <任意目录>/scripts/create_branch.py`（脚本自动定位自身，不依赖 cwd）。
+
 ```bash
-# 默认模式：截断到上一轮对话输出结束，名称自动从主题生成
+# ① pip 版（跨平台统一，推荐）
+fork --session current [--adapter workbuddy]
+
+# ② WorkBuddy 技能目录版（与 ① 等价）
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
   --session current
 
 # 默认模式 + 自定义名称
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
-  --session current --name "<分支名>"
+fork --session current --name "<分支名>"
 
-# 最精确：按请求ID截断（从 WorkBuddy UI "复制请求ID" 获取）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
-  --session current --request-id "<conversationRequestId>" --name "<分支名>"
+# 最精确：按请求ID截断（从产品 UI "复制请求ID" 获取）
+fork --session current --request-id "<conversationRequestId>" --name "<分支名>"
 
 # 指定模式：按特征文本截断
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
-  --session current --match "<拆分点特征文本>" --name "<分支名>"
+fork --session current --match "<拆分点特征文本>" --name "<分支名>"
 
 # 查询当前工作区的所有分支
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --list
+fork --list
 
-# 修复一个被 WorkBuddy 追加了多余消息的分支
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
-  --fix <分支会话ID>
+# 修复一个被主进程追加了多余消息的分支（仅 workbuddy）
+fork --fix <分支会话ID>
+
+# 其他产品（验证中，不宣传）：
+fork --session current --adapter claude-code --name "<分支名>"
 ```
 
 脚本自动完成：备份（仅源 jsonl 到 `~/.workbuddy/backups/<时间戳>/`）→ 定位截断点 → 截取 1..截断点 → 顶层 `sessionId` 改为新 UUID → **结构化字段级 id 替换**（只改 sessionId/output_text/toolResult.content 等已知字段，不碰 rawContent）→ sessions 表插入新行（复制源行，改 id/custom_title/status=terminated/时间戳）→ 验证 → **文件权限保持 0644**（不自动锁只读，用户可按需手动锁定）。

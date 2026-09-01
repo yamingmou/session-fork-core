@@ -1,0 +1,3 @@
+[console_scripts]
+fork = fork_core.cli:main
+fork-branch = fork_core.cli:main

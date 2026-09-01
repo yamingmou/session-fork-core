@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fork-core"
+version = "2.0.0"
+description = "Cross-product session forking engine (Fork = Projection Derivative). WorkBuddy / Claude Code / Codex adapters."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "OfferKuai (Offer快) Team", email = "contact@offerkuai.com" },
+]
+requires-python = ">=3.9"
+keywords = ["fork", "session", "agent", "conversation", "workbuddy", "claude-code", "branch"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Version Control",
+]
+
+[project.urls]
+Homepage = "https://github.com/yamingmou/workbuddy-session-fork"
+Source = "https://github.com/yamingmou/workbuddy-session-fork"
+
+[project.scripts]
+fork = "fork_core.cli:main"
+fork-branch = "fork_core.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "scripts" }
+packages = ["fork_core", "fork_core.adapters"]

@@ -1,0 +1,16 @@
+LICENSE
+README.md
+pyproject.toml
+scripts/fork_core/__init__.py
+scripts/fork_core/cli.py
+scripts/fork_core/engine.py
+scripts/fork_core/models.py
+scripts/fork_core.egg-info/PKG-INFO
+scripts/fork_core.egg-info/SOURCES.txt
+scripts/fork_core.egg-info/dependency_links.txt
+scripts/fork_core.egg-info/entry_points.txt
+scripts/fork_core.egg-info/top_level.txt
+scripts/fork_core/adapters/__init__.py
+scripts/fork_core/adapters/base.py
+scripts/fork_core/adapters/claude_code.py
+scripts/fork_core/adapters/workbuddy.py

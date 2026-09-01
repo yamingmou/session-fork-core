@@ -1,3 +1,21 @@
+Metadata-Version: 2.4
+Name: fork-core
+Version: 2.0.0
+Summary: Cross-product session forking engine (Fork = Projection Derivative). WorkBuddy / Claude Code / Codex adapters.
+Author-email: "OfferKuai (Offer快) Team" <contact@offerkuai.com>
+License: MIT
+Project-URL: Homepage, https://github.com/yamingmou/workbuddy-session-fork
+Project-URL: Source, https://github.com/yamingmou/workbuddy-session-fork
+Keywords: fork,session,agent,conversation,workbuddy,claude-code,branch
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Software Development :: Version Control
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 <h1><img src="https://raw.githubusercontent.com/yamingmou/workbuddy-session-fork/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> WorkBuddy Session Fork（会话分叉 · 打分支）</h1>
 
 把一段对话**复制**出一个独立分支：默认以上一轮对话的输出结束为截断点（也可按你指定的某条回复截断），截取会话前缀生成**新会话**，之后原会话继续、分支独立发展。适合"这个方向聊岔了，想回到上一轮重新来"、"同一主题开几条平行线分别讨论"的场景。
@@ -18,18 +36,7 @@
 
 ## 安装
 
-### 方式一：pip 安装（推荐，跨平台）
-
-Windows / macOS / Linux 统一：
-
-```bash
-pip install fork-core
-
-# 安装后获得全局命令
-fork --version
-```
-
-### 方式二：SkillHub（WorkBuddy 用户）
+### 方式一：SkillHub（一键安装）
 
 ```bash
 skillhub install session-fork --namespace user_5b43da63
@@ -37,21 +44,12 @@ skillhub install session-fork --namespace user_5b43da63
 
 或在 [SkillHub 官网](https://skillhub.cn) 搜索 `session-fork` 安装。
 
-### 方式三：GitHub 源码（任意目录）
+### 方式二：GitHub 源码
 
 ```bash
-git clone https://github.com/yamingmou/workbuddy-session-fork.git
-
-# 脚本自动定位自身，任意 cwd 可运行：
-python3 <clone目录>/scripts/create_branch.py --session current
+git clone https://github.com/yamingmou/workbuddy-session-fork.git \
+  ~/.workbuddy/skills/session-fork
 ```
-
-### 各平台会话数据位置（adapter 自动识别，无需配置）
-
-| 产品 | macOS / Linux | Windows |
-|---|---|---|
-| WorkBuddy | `~/.workbuddy/projects/` | `%USERPROFILE%\.workbuddy\projects\` |
-| Claude Code | `~/.claude/projects/` | `%USERPROFILE%\.claude\projects\` |
 
 ## 相关链接
 
@@ -68,27 +66,29 @@ python3 <clone目录>/scripts/create_branch.py --session current
 
 ### 命令行
 
-> `fork` 命令 = pip 安装的全局命令（跨平台）；WorkBuddy 技能目录用户也可用
-> `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py`（等价）。
-
 ```bash
 # 默认模式：截断到上一轮对话输出结束
-fork --session current --name "<分支名>"
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --session current --name "<分支名>"
 
-# 最精确：按请求ID截断（从产品 UI "复制请求ID" 获取）
-fork --session current --request-id "<conversationRequestId>" --name "<分支名>"
+# 最精确：按请求ID截断（从 WorkBuddy UI "复制请求ID" 获取）
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --session current --request-id "<conversationRequestId>" --name "<分支名>"
 
 # 指定模式：按特征文本截断
-fork --session current --match "<拆分点特征文本>" --name "<分支名>"
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --session current --match "<拆分点特征文本>" --name "<分支名>"
 
 # 查询当前工作区的所有分支
-fork --list
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --list
 
-# 修复被主进程追加了多余消息的分支（仅 workbuddy）
-fork --fix <分支会话ID>
+# 修复被 WorkBuddy 追加了多余消息的分支
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --fix <分支会话ID>
 
 # 先预览截断点，不写入
-fork --session current --dry-run
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --session current --dry-run
 ```
 
 ## 工作原理
