@@ -150,7 +150,7 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         with open(BRANCH_INDEX, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None) -> None:
+    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None) -> None:
         data = self._read_index()
         data["branches"].append(
             {
@@ -159,6 +159,7 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
                 "parent_id": parent_id or src.id,
                 "source_id": src.id,
                 "path": dst_path,
+                "at_seq": at_seq,
                 "created_at": src.created_at,
             }
         )

@@ -34,20 +34,17 @@ def _load_lines(path: str) -> list[dict]:
 def locate_last_reply(adapter, lines: list[dict]) -> tuple[int, int]:
     """DEFAULT 模式：截断点 = 最后一条完整 assistant 回复的末尾（上一轮输出结束）。
 
-    语义：用户发起"打分支"之前，最后一条有文本的 assistant 回复
-    （位于最后一条 user 消息之前）。
+    语义：截到"文件末尾之前最后一条有文本的 assistant 回复"。
+    - 主会话（用户刚发"打分支"，末条是 user）：截到它之前的最后一条 assistant 回复；
+    - 分支再 fork（分支文件末条是 assistant，用户尚未发新指令）：截到该 assistant
+      ——即分支当前的全部内容都成为新 fork 的历史（快照点可回：新投影自身也可再派生）。
     """
     n = len(lines)
-    last_user = None
-    for i, o in enumerate(lines, 1):
-        if adapter.is_user_message(o):
-            last_user = i
-    limit = last_user if last_user is not None else n + 1
-    for i in range(limit - 1, 0, -1):
+    for i in range(n, 0, -1):
         o = lines[i - 1]
         if adapter.is_assistant_message(o) and adapter.get_text(o).strip():
             return i, n
-    raise SystemExit("No completed assistant reply found before the latest user message")
+    raise SystemExit("No completed assistant reply found in transcript")
 
 
 def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None, request_id=None) -> tuple[int, int]:
@@ -181,7 +178,7 @@ def create_fork(
         adapter.write_branch(dst, truncated)
 
     if not dry_run:
-        adapter.register_branch(src_meta, new_id, dst, name, parent_id=src_meta.id)
+        adapter.register_branch(src_meta, new_id, dst, name, parent_id=src_meta.id, at_seq=cut)
         errs = verify_branch(adapter, dst, new_id, cut, src_id)
         if errs:
             raise SystemExit("VERIFY FAILED:\n  - " + "\n  - ".join(errs))

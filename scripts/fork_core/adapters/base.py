@@ -86,8 +86,12 @@ class TranscriptionAdapter:
         dst_path: str,
         name: str,
         parent_id: Optional[str] = None,
+        at_seq: Optional[int] = None,
     ) -> None:
-        """在会话索引中注册新分支（各产品不同：数据库插入 / 索引文件 / 纯文件）。"""
+        """在会话索引中注册新分支（各产品不同：数据库插入 / 索引文件 / 纯文件）。
+
+        at_seq = 截断点（会话级分支的"快照点"，谱系可回/可审计）。
+        """
         raise NotImplementedError
 
     def list_branches(self, cwd: Optional[str] = None) -> list[SessionMeta]:

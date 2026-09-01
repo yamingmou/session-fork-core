@@ -86,6 +86,35 @@ conn.close()
 assert row["status"] == "working"
 print("✓ 源会话 status 未变（working）")
 
+# 6. 谱系记录（旁路索引）
+lineage = adapter._lineage_get()
+assert r.new_id in lineage, "fork 未写入谱系索引"
+assert lineage[r.new_id]["parent_id"] == src_id, "谱系 parent 错误"
+assert lineage[r.new_id]["at_seq"] == r.cut, f"谱系 at_seq 错误: {lineage[r.new_id]['at_seq']} != {r.cut}"
+print(f"✓ 谱系索引: {r.new_id[:8]}… parent={src_id[:8]}… at_seq={r.cut}")
+
+# 7. list_branches 带谱系
+branches2 = adapter.list_branches()
+b2 = next(b for b in branches2 if b.id == r.new_id)
+assert b2.parent_id == src_id, "list_branches 未补 parent_id"
+assert b2.extra.get("at_seq") == r.cut, "list_branches 未补 at_seq"
+print(f"✓ list_branches 谱系补齐: parent={b2.parent_id[:8]}… at_seq={b2.extra.get('at_seq')}")
+
+# 8. 从分支再 fork（快照点可回：新投影自身也可再派生）
+r2 = create_fork(adapter, r.new_id, name="孙分支", dry_run=False)
+lineage2 = adapter._lineage_get()
+assert r2.new_id in lineage2, "孙分支未写入谱系"
+assert lineage2[r2.new_id]["parent_id"] == r.new_id, "孙分支 parent 错误"
+print(f"✓ 从分支再 fork: {r2.new_id[:8]}… parent={r.new_id[:8]}… at_seq={r2.cut}")
+
+# 9. lineage_tree
+tree = adapter.lineage_tree()
+tree_ids = [t.id for t in tree]
+assert src_id in tree_ids and r.new_id in tree_ids and r2.new_id in tree_ids, "谱系树缺节点"
+src_node = next(t for t in tree if t.id == src_id)
+assert not src_node.parent_id, "根节点不应有 parent"
+print(f"✓ lineage_tree: {len(tree)} 节点（根→分支→孙分支）")
+
 import shutil
 shutil.rmtree(tmpdir)
-print("\n✅ WorkBuddy adapter 全部测试通过（与 v1.4.2 行为一致）")
+print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树）")

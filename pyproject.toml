@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fork-core"
-version = "2.0.0"
+version = "2.1.0"
 description = "Cross-product session forking engine (Fork = Projection Derivative). WorkBuddy / Claude Code / Codex adapters."
 readme = "README.md"
 license = { text = "MIT" }
@@ -21,8 +21,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yamingmou/workbuddy-session-fork"
-Source = "https://github.com/yamingmou/workbuddy-session-fork"
+Homepage = "https://github.com/yamingmou/session-fork-core"
+Source = "https://github.com/yamingmou/session-fork-core"
 
 [project.scripts]
 fork = "fork_core.cli:main"

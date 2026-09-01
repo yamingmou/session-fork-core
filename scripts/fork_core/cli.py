@@ -12,7 +12,40 @@ import time
 
 from . import available, create_fork, get_adapter, list_forks
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+
+
+def print_tree(metas) -> None:
+    """按 parent_id 链打印谱系树（父会话 → 子分支 → 孙分支）。"""
+    if not metas:
+        print("🌳 暂无谱系（尚未创建分支）")
+        return
+    by_id = {m.id: m for m in metas}
+    children: dict[str, list] = {}
+    roots = []
+    for m in metas:
+        p = m.parent_id or ""
+        if p and p in by_id:
+            children.setdefault(p, []).append(m)
+        else:
+            roots.append(m)
+    seen = set()
+
+    def render(m, prefix="", is_last=True):
+        branch_char = "└── " if is_last else "├── "
+        label = m.title or m.id[:12]
+        extra = ""
+        if m.extra.get("at_seq") is not None:
+            extra = f"  (atSeq={m.extra['at_seq']})"
+        print(f"{prefix}{branch_char}{label}  [{m.id[:8]}]{extra}")
+        kids = children.get(m.id, [])
+        next_prefix = prefix + ("    " if is_last else "│   ")
+        for i, k in enumerate(kids):
+            render(k, next_prefix, i == len(kids) - 1)
+
+    print("🌳 Fork 谱系树")
+    for i, r in enumerate(roots):
+        render(r, "", i == len(roots) - 1)
 
 
 def main(argv=None) -> None:
@@ -28,6 +61,7 @@ def main(argv=None) -> None:
     ap.add_argument("--name", default=None, help="branch name (default: auto from topic)")
     ap.add_argument("--dry-run", action="store_true", help="only locate & report, write nothing")
     ap.add_argument("--list", action="store_true", dest="list_branches", help="list branches in current workspace")
+    ap.add_argument("--tree", action="store_true", dest="tree", help="show fork lineage as a tree (with --list)")
     ap.add_argument("--fix", metavar="SESSION_ID", help="re-truncate a branch (workbuddy only)")
     ap.add_argument("--adapter", default="workbuddy", choices=available(), help="product adapter")
     args = ap.parse_args(argv)
@@ -36,6 +70,9 @@ def main(argv=None) -> None:
 
     if args.list_branches:
         cwd = os.environ.get("WORKBUDDY_CWD")
+        if args.tree and hasattr(adapter, "lineage_tree"):
+            print_tree(adapter.lineage_tree(cwd))
+            return
         branches = list_forks(adapter, cwd)
         if not branches:
             print("📂 当前工作区暂无分支")

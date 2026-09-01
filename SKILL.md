@@ -1,16 +1,16 @@
 ---
 name: session-fork
 slug: session-fork
-displayName: WorkBuddy 会话分叉（打分支）
-description: 把当前（或指定）WorkBuddy 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 2.0.0
+displayName: 会话分叉（打分支）
+description: 把当前（或指定）AI 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。基于 fork-core 通用引擎（Fork = Projection Derivative 投影派生），跨产品可用（WorkBuddy 适配器默认，Claude Code 等适配器验证中）。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
+version: 2.1.0
 author: OfferKuai (Offer快) Team
 license: MIT
-tags: [workbuddy, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
+tags: [workbuddy, claude-code, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
 agent_created: true
 ---
 
-<h1><img src="https://raw.githubusercontent.com/yamingmou/workbuddy-session-fork/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> Session Fork（会话分叉 · 打分支）</h1>
+<h1><img src="https://raw.githubusercontent.com/yamingmou/session-fork-core/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> Session Fork（会话分叉 · 打分支）</h1>
 
 把当前（或指定）会话复制为**独立新分支**：默认以上一轮对话的输出结束为截断点（也可按用户指定的回复截断），截取前缀（1..截断点），改写会话 id 后存入存储，原会话不受影响。
 
@@ -20,7 +20,9 @@ agent_created: true
 
 - **零配置默认模式**：用户只说"打分支"即可，截断点自动 = 上一轮对话的输出结束，无需提供任何拆分点文本；
 - **精确指定模式**：按用户引用的某条回复特征文本（`--match`）、行号（`--line`）或请求ID（`--request-id`）截断；
-- **存储级复制**：新 jsonl 文件 + sessions 表新行记录，不是"链接/指向"——原会话后续写入不会污染分支；
+- **存储级复制**：新 jsonl 文件 + 会话索引新行记录，不是"链接/指向"——原会话后续写入不会污染分支；
+- **谱系可追溯**：`parent_id` + `at_seq`（快照点）记录分支从哪派生，`--list --tree` 展示分叉树；
+- **快照点可回**：分支可再派生（从分支再 fork = 新投影继续演进）；
 - **内置安全**：执行前自动备份（仅源 jsonl），结构化字段级 id 替换（不碰 rawContent），自带完整性校验；
 - **可预览**：`--dry-run` 先确认截断点定位，再正式执行。
 
@@ -194,9 +196,9 @@ fork --session current --adapter claude-code --name "<分支名>"
 
 ## 边界
 
-- 本技能做的是**存储级复制**（新 jsonl 文件 + sessions 表新行记录），不是"链接/指向"——链接会让原会话后续写入污染分支，且无法表达"截断到某行为止"。
+- 本技能做的是**存储级复制**（新 jsonl 文件 + 会话索引新行记录），不是"链接/指向"——链接会让原会话后续写入污染分支，且无法表达"截断到某行为止"。
 - 分支创建后如需删除，由用户决定，不擅动。
-- 仅面向 WorkBuddy 会话存储格式（`~/.workbuddy/projects/*/*.jsonl` + `workbuddy.db`），其他平台不适用。
+- 适配边界：只适配「会话 transcript 本地落盘、格式开放/稳定」的开发者工具（WorkBuddy 默认，Claude Code 验证中；C 端云优先 SaaS 如元宝/千问因本地无 transcript 不在范围）。
 
 ---
 
@@ -210,5 +212,5 @@ fork --session current --adapter claude-code --name "<分支名>"
 
 MIT License — free to use, modify and redistribute with attribution.
 
-**Source (GitHub):** https://github.com/yamingmou/workbuddy-session-fork
+**Source (GitHub):** https://github.com/yamingmou/session-fork-core
 **Install (SkillHub):** `skillhub install session-fork --namespace user_5b43da63`（或 https://skillhub.cn 搜索 `session-fork`）

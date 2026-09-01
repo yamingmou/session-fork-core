@@ -1,10 +1,12 @@
-<h1><img src="https://raw.githubusercontent.com/yamingmou/workbuddy-session-fork/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> WorkBuddy Session Fork（会话分叉 · 打分支）</h1>
+<h1><img src="https://raw.githubusercontent.com/yamingmou/session-fork-core/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> Session Fork（会话分叉 · 打分支）</h1>
+
+> **Fork = Projection Derivative（投影派生）**：任何「会话/对话/任务」是一个投影；分支 = 从某个**快照点**派生新投影——继承截断点之前的全部历史（记忆不丢），新投影独立演进，原投影不变（生产基线），谱系可追溯。
 
 把一段对话**复制**出一个独立分支：默认以上一轮对话的输出结束为截断点（也可按你指定的某条回复截断），截取会话前缀生成**新会话**，之后原会话继续、分支独立发展。适合"这个方向聊岔了，想回到上一轮重新来"、"同一主题开几条平行线分别讨论"的场景。
 
-- 名称：`session-fork`（WorkBuddy 会话分叉 / 打分支）
-- 适用平台：WorkBuddy
-- 版本：1.4.2
+- 名称：`session-fork`（会话分叉 / 打分支）｜引擎：`fork-core`（跨产品通用引擎）
+- 适用平台：WorkBuddy（默认适配器）· Claude Code（验证中）· Codex / opencode（规划中）
+- 版本：2.1.0
 - 作者：OfferKuai（Offer快）团队
 - 许可证：MIT
 
@@ -13,6 +15,8 @@
 - **零配置默认模式**：只说"打分支"即可，截断点自动 = 上一轮对话的输出结束；
 - **精确指定模式**：按回复特征文本（`--match`）、行号（`--line`）或请求ID（`--request-id`）截断；
 - **存储级复制**：新 jsonl 文件 + sessions 表新行记录，原会话后续写入不会污染分支；
+- **谱系可追溯**：`parent_id` + `at_seq`（快照点）记录每个分支从哪派生，`--list --tree` 展示分叉树；
+- **快照点可回**：分支可再派生（从分支再 fork = 新投影继续演进，谱系树延伸）；
 - **内置安全**：执行前自动备份（仅源 jsonl），结构化字段级 id 替换（不碰 rawContent），自带完整性校验；
 - **可预览**：`--dry-run` 先确认截断点，再正式执行。
 
@@ -23,7 +27,11 @@
 Windows / macOS / Linux 统一：
 
 ```bash
+# PyPI 发布后：
 pip install fork-core
+
+# 当前（发布前）：从 GitHub 安装
+pip install git+https://github.com/yamingmou/session-fork-core.git
 
 # 安装后获得全局命令
 fork --version
@@ -37,10 +45,14 @@ skillhub install session-fork --namespace user_5b43da63
 
 或在 [SkillHub 官网](https://skillhub.cn) 搜索 `session-fork` 安装。
 
+> ⚠️ **渠道版本说明**：SkillHub 渠道当前为稳定版（v1.4.x，基础打分支能力）；
+> **v2.x 引擎版（fork-core：谱系/--tree/跨产品适配器）为内部验证中，尚未在 SkillHub 发布**。
+> 需要完整 2.x 能力请用 pip / git 安装。
+
 ### 方式三：GitHub 源码（任意目录）
 
 ```bash
-git clone https://github.com/yamingmou/workbuddy-session-fork.git
+git clone https://github.com/yamingmou/session-fork-core.git
 
 # 脚本自动定位自身，任意 cwd 可运行：
 python3 <clone目录>/scripts/create_branch.py --session current
@@ -55,7 +67,7 @@ python3 <clone目录>/scripts/create_branch.py --session current
 
 ## 相关链接
 
-- **GitHub 仓库**：https://github.com/yamingmou/workbuddy-session-fork
+- **GitHub 仓库**：https://github.com/yamingmou/session-fork-core
 - **SkillHub 技能**：https://skillhub.cn （搜索 `session-fork`，作者 `@user_5b43da63`）
 
 ## 使用
@@ -84,6 +96,9 @@ fork --session current --match "<拆分点特征文本>" --name "<分支名>"
 # 查询当前工作区的所有分支
 fork --list
 
+# 查看分叉谱系树（父→子→孙）
+fork --list --tree
+
 # 修复被主进程追加了多余消息的分支（仅 workbuddy）
 fork --fix <分支会话ID>
 
@@ -98,7 +113,45 @@ fork --session current --dry-run
 3. 备份源 jsonl 到 `~/.workbuddy/backups/<时间戳>/`（不复制数据库）；
 4. 截取前缀（1..截断点），顶层 `sessionId` 改为新 UUID，**结构化字段级 id 替换**（只改 `sessionId`/`output_text.text`/`toolResult.content`/`tool_use.input` 等已知字段，不碰 rawContent）；
 5. sessions 表插入新行（复制源行，status=terminated）；
-6. 校验：可解析性、sessionId 一致性、零旧 id 残留、末条完整性。
+6. **谱系记录**：`~/.workbuddy/fork.lineage.json` 旁路索引写入 parent_id + at_seq（快照点），不污染官方 schema；
+7. 校验：可解析性、sessionId 一致性、零旧 id 残留、末条完整性。
+
+## 内部架构（fork-core 通用引擎）
+
+脚本基于 **fork-core 通用引擎 + 产品 adapter** 设计：
+
+```
+fork_core/                    # 通用引擎（与产品无关）
+├── engine.py                 # 截断点定位/截取/备份/验证/谱系
+├── models.py                 # SessionMeta（含 parent_id）/ ForkResult 契约
+└── adapters/
+    ├── base.py               # TranscriptionAdapter 接口
+    ├── workbuddy.py          # WorkBuddy 适配器（默认）
+    └── claude_code.py        # Claude Code 适配器（验证中）
+```
+
+- 核心逻辑（截断定位、结构化 id 替换、完整性校验、谱系）全部在引擎层，与存储格式无关；
+- 每个产品只实现一个 adapter，格式差异被完全隔离——**新增产品 = 新增一个 adapter 文件，引擎零改动**。
+
+## 路线图（Roadmap）
+
+> 本项目是 **Agent 业务层抽象**的会话级实现——把「分叉」从单一产品的功能，抽象成
+> 跨产品、可被上层消费的底层能力。
+
+**已实现（会话级分支）**
+- ✅ 存储级复制 + 4 种截断定位（默认/--match/--line/--request-id）
+- ✅ 结构化 id 替换（不碰 rawContent）+ 完整性校验 + 自动备份
+- ✅ 谱系可追溯（parent_id + at_seq 快照点）+ 分叉树展示
+- ✅ 快照点可回（分支可再派生）
+- ✅ 跨平台安装（pip / SkillHub / git clone）
+- ✅ WorkBuddy adapter 正式；Claude Code adapter 验证通过
+
+**开发中 / 规划中**
+- 🚧 **跨产品适配器矩阵**：Codex（rollout 文件，含 `forked_from_id` 语义）、opencode（SQLite + 版本化迁移）——引擎已支持，adapter 待落地
+- 🚧 **业务层接口固化**：`createFork(projection, {atSeq})` / `listForks(projection)` 固化为框架无关契约，被上层（dsh-retrace 等生产级运营层）以库的方式调用
+- 🔭 **会话内分支（不在此引擎范围）**：同一会话内的版本时间线/分叉图/回退，由上层运营层各自抽象——本引擎只做「会话级派生」，两者正交互补
+
+**分层边界**：fork-core 只管「派生得正确」（新会话怎么诞生）；「派生得健康」（诊断/修复/审计/版本化）是上层（如 dsh-retrace）的职责。产品接入判定三问：① transcript 是否本地落盘？② 格式是否开放/稳定？③ 是否有官方扩展点？
 
 ## 边界与已知坑位
 
@@ -106,7 +159,7 @@ fork --session current --dry-run
 - 快照特性：复制发生在读取时刻，之后原会话的新消息不会进分支（正常行为）；
 - 附属目录 `tool-results/` 是运行时缓存，jsonl 已内嵌完整结果，分支无需复制；
 - 文件权限保持 0644，不自动锁只读——如需防止 WorkBuddy 追加消息，可手动 `chmod 444 <分支文件>`；
-- 仅面向 WorkBuddy 会话存储格式（`~/.workbuddy/projects/*/*.jsonl` + `workbuddy.db`），其他平台不适用。
+- 适配边界：只适配「会话 transcript 本地落盘、格式开放/稳定」的开发者工具（判定三问见路线图）。
 
 ## 署名 / About
 

@@ -2,7 +2,8 @@
 
 存储：
   - transcript: ~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl
-  - 索引:      ~/.workbuddy/workbuddy.db 的 sessions 表
+  - 索引:      ~/.workbuddy/workbuddy.db 的 sessions 表（官方，只读+插入新行）
+  - 谱系:      ~/.workbuddy/fork.lineage.json（旁路索引，不污染官方 schema）
 消息结构（jsonl 每行）：
   - type=message + role=user/assistant + content[]（output_text/input_text 等）
   - providerData.conversationRequestId（UI "复制请求ID" 的来源）
@@ -19,6 +20,8 @@ from .base import TranscriptionAdapter
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
 DB_PATH = os.path.join(HOME, ".workbuddy", "workbuddy.db")
+# 旁路谱系索引（不往官方 sessions 表加字段；与 Claude adapter 的 fork.branches.json 同构）
+LINEAGE_PATH = os.path.join(HOME, ".workbuddy", "fork.lineage.json")
 
 
 class WorkBuddyAdapter(TranscriptionAdapter):
@@ -165,7 +168,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             extra={k: row[k] for k in row.keys() if k not in ("id", "custom_title", "status", "created_at", "cwd")},
         )
 
-    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None) -> None:
+    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None) -> None:
         db = self._connect()
         try:
             cur = db.cursor()
@@ -189,6 +192,43 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             db.commit()
         finally:
             db.close()
+        # 旁路谱系索引（不污染官方 sessions 表）
+        self._lineage_add(new_id, name, parent_id or src.id, at_seq, src.cwd or "")
+
+    # ------------------------------------------------------------------
+    # 旁路谱系索引（fork.lineage.json）
+    # ------------------------------------------------------------------
+    def _lineage_read(self) -> dict:
+        if os.path.exists(LINEAGE_PATH):
+            try:
+                return json.load(open(LINEAGE_PATH, encoding="utf-8"))
+            except Exception:
+                pass
+        return {"forks": []}
+
+    def _lineage_write(self, data: dict) -> None:
+        os.makedirs(os.path.dirname(LINEAGE_PATH), exist_ok=True)
+        with open(LINEAGE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _lineage_add(self, new_id: str, name: str, parent_id: str, at_seq: int, cwd: str) -> None:
+        data = self._lineage_read()
+        data["forks"].append(
+            {
+                "id": new_id,
+                "name": name,
+                "parent_id": parent_id,
+                "at_seq": at_seq,
+                "cwd": cwd,
+                "created_at": int(datetime.datetime.now().timestamp() * 1000),
+            }
+        )
+        self._lineage_write(data)
+
+    def _lineage_get(self) -> dict:
+        """返回 {fork_id: {parent_id, at_seq, name, cwd, created_at}}。"""
+        data = self._lineage_read()
+        return {f["id"]: f for f in data.get("forks", [])}
 
     def list_branches(self, cwd: str | None = None) -> list[SessionMeta]:
         db = self._connect()
@@ -221,7 +261,41 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             branches.append(
                 SessionMeta(id=r["id"], title=title, status=r["status"], created_at=ts, cwd=r["cwd"])
             )
+        # 补谱系（parent_id / at_seq 来自旁路索引）
+        lineage = self._lineage_get()
+        for b in branches:
+            f = lineage.get(b.id)
+            if f:
+                b.parent_id = f.get("parent_id", "")
+                b.extra["at_seq"] = f.get("at_seq")
         return branches
+
+    def lineage_tree(self, cwd: str | None = None) -> list[SessionMeta]:
+        """返回含谱系的全部会话（含非分支的父会话），供树形展示。
+
+        按 parent_id 链组织：父会话 → 子分支 → 孙分支。
+        """
+        lineage = self._lineage_get()
+        if not lineage:
+            return []
+        # 收集所有出现在谱系里的 id（fork + parent）
+        ids = set()
+        for f in lineage.values():
+            ids.add(f["id"])
+            if f.get("parent_id"):
+                ids.add(f["parent_id"])
+        metas = []
+        for sid in ids:
+            m = self.load_session_meta(sid)
+            if m:
+                f = lineage.get(sid)
+                if f:
+                    m.parent_id = f.get("parent_id", "")
+                    m.extra["at_seq"] = f.get("at_seq")
+                metas.append(m)
+        # 按创建时间排序（父会话在前）
+        metas.sort(key=lambda m: (m.created_at is None, m.created_at or 0))
+        return metas
 
     def is_branch_name(self, title: str) -> bool:
         return ("分支" in title) or ("·" in title) or ("fork" in title.lower())
