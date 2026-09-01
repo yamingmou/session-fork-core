@@ -39,7 +39,7 @@ import sys
 import time
 import uuid
 
-VERSION = "1.3.0"
+VERSION = "1.4.2"
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
@@ -322,13 +322,11 @@ def main():
         truncated = lines[:cut]
         with open(fix_path, "w") as f:
             f.write("\n".join(truncated) + "\n")
-        # Re-lock
-        os.chmod(fix_path, 0o444)
 
         # Re-verify
         check = open(fix_path).read().splitlines()
         print(f"Verify   : {len(check)} lines (was {total}, removed {total - len(check)})")
-        print(f"Locked   : {os.path.basename(fix_path)} set to read-only (0444)")
+        print(f"⚠️  分支文件未锁定只读。如需防止 WorkBuddy 追加消息，请手动执行：chmod 444 {fix_path}")
         db.close()
         return
 
@@ -375,30 +373,49 @@ def main():
     backup_dir = os.path.join(BACKUPS_DIR, ts)
     os.makedirs(backup_dir, exist_ok=True)
     shutil.copy2(transcript, os.path.join(backup_dir, os.path.basename(transcript)))
-    shutil.copy2(DB_PATH, os.path.join(backup_dir, "workbuddy.db"))
-    print(f"Backup   : {backup_dir}")
+    print(f"Backup   : {backup_dir} (source jsonl only, no database copy)")
 
-    lines = open(transcript).read().splitlines()[:cut]
-    out_lines = []
+    # Structured rewrite of old sessionId in well-known fields only
+    # (avoid raw string replace on rawContent / user content etc.)
+    replacements = 0
     for l in lines:
         o = json.loads(l)
-        o["sessionId"] = new_id
+        # Top-level sessionId
+        if o.get("sessionId") == src_id:
+            o["sessionId"] = new_id
+            replacements += 1
+        # content[] blocks
+        for c in o.get("content", []) or []:
+            if isinstance(c, dict):
+                # output_text.text, input_text.text
+                if "text" in c and isinstance(c["text"], str) and src_id in c["text"]:
+                    c["text"] = c["text"].replace(src_id, new_id)
+                    replacements += 1
+                # tool_use input (arguments)
+                if "input" in c and isinstance(c["input"], dict):
+                    for k, v in c["input"].items():
+                        if isinstance(v, str) and src_id in v:
+                            c["input"][k] = v.replace(src_id, new_id)
+                            replacements += 1
+        # providerData.toolResult.content
+        pd = o.get("providerData") or {}
+        tr = pd.get("toolResult") or {}
+        trc = tr.get("content")
+        if isinstance(trc, str) and src_id in trc:
+            tr["content"] = trc.replace(src_id, new_id)
+            replacements += 1
+        elif isinstance(trc, list):
+            for item in trc:
+                if isinstance(item, dict) and "text" in item:
+                    if src_id in item["text"]:
+                        item["text"] = item["text"].replace(src_id, new_id)
+                        replacements += 1
         out_lines.append(json.dumps(o, ensure_ascii=False))
     dst = os.path.join(os.path.dirname(transcript), new_id + ".jsonl")
     with open(dst, "w") as f:
         f.write("\n".join(out_lines) + "\n")
-
-    # Rewrite nested old-id residue (strings anywhere in the JSON tree)
-    raw = open(dst).read()
-    if src_id in raw:
-        raw = raw.replace(src_id, new_id)
-        with open(dst, "w") as f:
-            f.write(raw)
-        print(f"Note     : replaced {src_id}->{new_id} inside nested fields")
-
-    # Lock the file to prevent WorkBuddy from appending more messages
-    os.chmod(dst, 0o444)
-    print(f"Locked   : {os.path.basename(dst)} set to read-only (0444)")
+    if replacements:
+        print(f"Note     : replaced {src_id}->{new_id} in {replacements} structured fields")
 
     # Insert DB row
     now_ms = int(time.time() * 1000)
@@ -447,6 +464,7 @@ def main():
     print(f"Verify   : OK ({cut} lines, sessionId consistent, zero residue, tail complete)")
     print(f"NEW SESSION ID: {new_id}")
     print(f"custom_title: {branch_name}  | status: terminated")
+    print(f"⚠️  注意：分支文件未锁定只读。如需防止 WorkBuddy 追加消息，请手动执行：chmod 444 {dst}")
     print(f"ACTION   : ⚠️ 请重启 WorkBuddy 以在会话列表中看到新分支")
 
 

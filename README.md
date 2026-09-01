@@ -1,21 +1,19 @@
-# WorkBuddy Session Fork（WorkBuddy 会话分叉 · 打分支）
-
-> WorkBuddy 技能：把当前会话复制成一个独立新分支（时间线分叉），原会话不受影响。
+<h1><img src="https://raw.githubusercontent.com/yamingmou/workbuddy-session-fork/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> WorkBuddy Session Fork（会话分叉 · 打分支）</h1>
 
 把一段对话**复制**出一个独立分支：默认以上一轮对话的输出结束为截断点（也可按你指定的某条回复截断），截取会话前缀生成**新会话**，之后原会话继续、分支独立发展。适合"这个方向聊岔了，想回到上一轮重新来"、"同一主题开几条平行线分别讨论"的场景。
 
 - 名称：`session-fork`（WorkBuddy 会话分叉 / 打分支）
 - 适用平台：WorkBuddy
-- 版本：1.0.0
+- 版本：1.4.2
 - 作者：OfferKuai（Offer快）团队
 - 许可证：MIT
 
 ## 功能特性
 
 - **零配置默认模式**：只说"打分支"即可，截断点自动 = 上一轮对话的输出结束；
-- **精确指定模式**：按回复特征文本（`--match`）或行号（`--line`）截断；
-- **存储级复制**：新文件 + 新数据库行，原会话后续写入不会污染分支；
-- **内置安全**：执行前自动备份（jsonl + 数据库），嵌套字段旧 id 全量替换，自带完整性校验；
+- **精确指定模式**：按回复特征文本（`--match`）、行号（`--line`）或请求ID（`--request-id`）截断；
+- **存储级复制**：新 jsonl 文件 + sessions 表新行记录，原会话后续写入不会污染分支；
+- **内置安全**：执行前自动备份（仅源 jsonl），结构化字段级 id 替换（不碰 rawContent），自带完整性校验；
 - **可预览**：`--dry-run` 先确认截断点，再正式执行。
 
 ## 安装
@@ -55,9 +53,20 @@ git clone https://github.com/yamingmou/workbuddy-session-fork.git \
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
   --session current --name "<分支名>"
 
+# 最精确：按请求ID截断（从 WorkBuddy UI "复制请求ID" 获取）
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --session current --request-id "<conversationRequestId>" --name "<分支名>"
+
 # 指定模式：按特征文本截断
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
   --session current --match "<拆分点特征文本>" --name "<分支名>"
+
+# 查询当前工作区的所有分支
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --list
+
+# 修复被 WorkBuddy 追加了多余消息的分支
+python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
+  --fix <分支会话ID>
 
 # 先预览截断点，不写入
 python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
@@ -67,18 +76,19 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
 ## 工作原理
 
 1. 定位会话 transcript（`~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl`）；
-2. 定位截断点：默认 = 最后一条完整 assistant 回复的末尾（`--match`/`--line` 可覆盖）；
-3. 备份 jsonl + `workbuddy.db` 到 `~/.workbuddy/backups/<时间戳>/`；
-4. 截取前缀（1..截断点），顶层 `sessionId` 改为新 UUID，**嵌套字段旧 id 全量替换**（`output.text` / `toolResult` / `arguments` / `reasoning` 等，一次实测 87 处）；
-5. 数据库 `sessions` 表插入新行（复制源行，status=terminated）；
+2. 定位截断点：默认 = 最后一条完整 assistant 回复的末尾；`--request-id`/`--match`/`--line` 可精确指定；
+3. 备份源 jsonl 到 `~/.workbuddy/backups/<时间戳>/`（不复制数据库）；
+4. 截取前缀（1..截断点），顶层 `sessionId` 改为新 UUID，**结构化字段级 id 替换**（只改 `sessionId`/`output_text.text`/`toolResult.content`/`tool_use.input` 等已知字段，不碰 rawContent）；
+5. sessions 表插入新行（复制源行，status=terminated）；
 6. 校验：可解析性、sessionId 一致性、零旧 id 残留、末条完整性。
 
 ## 边界与已知坑位
 
-- 做的是**存储级复制**，不是"链接/指向"——链接会让原会话后续写入污染分支；
+- 做的是**存储级复制**（新 jsonl 文件 + sessions 表新行记录），不是"链接/指向"——链接会让原会话后续写入污染分支；
 - 快照特性：复制发生在读取时刻，之后原会话的新消息不会进分支（正常行为）；
 - 附属目录 `tool-results/` 是运行时缓存，jsonl 已内嵌完整结果，分支无需复制；
-- 仅面向 WorkBuddy 会话存储格式（`~/.workbuddy/projects/*/*.jsonl` + `workbuddy.db`）。
+- 文件权限保持 0644，不自动锁只读——如需防止 WorkBuddy 追加消息，可手动 `chmod 444 <分支文件>`；
+- 仅面向 WorkBuddy 会话存储格式（`~/.workbuddy/projects/*/*.jsonl` + `workbuddy.db`），其他平台不适用。
 
 ## 署名 / About
 
