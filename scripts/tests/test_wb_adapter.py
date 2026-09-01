@@ -135,10 +135,6 @@ src_node = next(t for t in tree if t.id == src_id)
 assert not src_node.parent_id, "根节点不应有 parent"
 print(f"✓ lineage_tree: {len(tree)} 节点（根→分支→孙分支）")
 
-import shutil
-shutil.rmtree(tmpdir)
-print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树）")
-
 # ============================================================
 # 10. rewrite_ids 专项：覆盖全部可读字段 + rawContent 黑名单
 # ============================================================
@@ -174,3 +170,20 @@ assert oid not in s["providerData"]["toolResult"]["renderer"]["value"], "rendere
 assert oid in s["providerData"]["rawResponse"], "rawResponse 被改写（违反安全承诺）"
 assert oid in out[1]["rawContent"], "rawContent 被改写（违反安全承诺）"
 print(f"✓ rewrite_ids 专项: {n} 处替换，rawContent/rawResponse 黑名单生效")
+
+# ============================================================
+# 11. fork --verify 真库体检：临时库有真实会话 → L2 全绿
+# ============================================================
+from fork_core.engine import verify_environment
+
+items = verify_environment(adapter)
+fails = [it for it in items if not it.ok]
+real_replace = [it for it in items if it.name.startswith("真实数据替换")]
+assert not fails, f"verify 有失败项: {[(i.name, i.detail) for i in fails]}"
+assert real_replace, "verify 未跑真实数据替换验证"
+assert all(it.level == "L2" for it in real_replace), "真实数据替换应为 L2"
+print(f"✓ fork --verify: {len(items)} 项全绿，真实数据替换 L2（{len(real_replace)} 个会话）")
+
+import shutil
+shutil.rmtree(tmpdir)
+print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树/rewrite 专项/真库体检）")

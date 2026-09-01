@@ -12,9 +12,10 @@
 所有方法都接收 engine 传入的上下文，不依赖全局状态。
 """
 
+import os
 from typing import Any, Optional
 
-from ..models import SessionMeta
+from ..models import SessionMeta, VerifyItem
 
 
 class TranscriptionAdapter:
@@ -101,3 +102,20 @@ class TranscriptionAdapter:
     def is_branch_name(self, title: str) -> bool:
         """判断标题是否看起来像分支（用于 list 过滤）。"""
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # E. 体检（fork --verify / --doctor 用，可选覆盖）
+    # ------------------------------------------------------------------
+    def verify_storage(self) -> list[VerifyItem]:
+        """存储层体检（存在性/可写）。默认实现只查 PROJECTS_DIR 存在性。
+
+        产品 adapter 应覆盖：数据库/schema 约束/真实会话数等（返回 VerifyItem 列表）。
+        """
+        items = []
+        projects = getattr(self, "PROJECTS_DIR", None)
+        ok = bool(projects) and os.path.isdir(projects) if projects else False
+        items.append(VerifyItem(
+            "transcript 目录", "L1", ok,
+            str(projects) if ok else "缺失（无会话存储）",
+        ))
+        return items

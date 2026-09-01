@@ -12,7 +12,7 @@ import time
 
 from . import available, create_fork, get_adapter, list_forks
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 
 
 def print_tree(metas) -> None:
@@ -63,10 +63,15 @@ def main(argv=None) -> None:
     ap.add_argument("--list", action="store_true", dest="list_branches", help="list branches in current workspace")
     ap.add_argument("--tree", action="store_true", dest="tree", help="show fork lineage as a tree (with --list)")
     ap.add_argument("--fix", metavar="SESSION_ID", help="re-truncate a branch (workbuddy only)")
+    ap.add_argument("--verify", "--doctor", action="store_true", dest="verify", help="real-database health check (L2), alias --doctor")
     ap.add_argument("--adapter", default="workbuddy", choices=available(), help="product adapter")
     args = ap.parse_args(argv)
 
     adapter = get_adapter(args.adapter)
+
+    if args.verify:
+        run_verify(adapter)
+        return
 
     if args.list_branches:
         cwd = os.environ.get("WORKBUDDY_CWD")
@@ -116,6 +121,26 @@ def main(argv=None) -> None:
     print(f"custom_title: {r.name}  | status: terminated")
     print(f"⚠️  注意：分支文件未锁定只读。如需防止主进程追加消息，请手动执行：chmod 444 {r.dst_path}")
     print(f"ACTION   : ⚠️ 请重启对应产品以在会话列表中看到新分支")
+
+
+def run_verify(adapter) -> None:
+    """fork --verify / --doctor：真库体检（L2 级，发布/打分支前必跑）。"""
+    from .engine import verify_environment
+
+    items = verify_environment(adapter)
+    print(f"🩺 fork --verify — {adapter.name} 真库体检（验证分级：L1 fixture / L2 真库 / L3 产品终验）")
+    print()
+    ok_all = True
+    for it in items:
+        mark = "✅" if it.ok else "❌"
+        print(f"  {mark} [{it.level}] {it.name}: {it.detail}")
+        ok_all = ok_all and it.ok
+    print()
+    if ok_all:
+        print("✅ 全部通过 — 该环境达到 L2 真库级验证，可安全打分支/发布")
+    else:
+        print("❌ 存在失败项 — 请修复后再打分支/发布（开发规范 §二·五：L2 真库验证是必须项）")
+        sys.exit(1)
 
 
 def run_fix(fix_session_id: str) -> None:

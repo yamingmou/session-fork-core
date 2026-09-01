@@ -6,7 +6,7 @@
 
 - 名称：`session-fork`（会话分叉 / 打分支）｜引擎：`fork-core`（跨产品通用引擎）
 - 适用平台：WorkBuddy（默认适配器）· Claude Code（验证中）· Codex / opencode（规划中）
-- 版本：2.2.0
+- 版本：2.3.0
 - 作者：OfferKuai（Offer快）团队
 - 许可证：MIT
 
@@ -45,9 +45,7 @@ skillhub install session-fork --namespace user_5b43da63
 
 或在 [SkillHub 官网](https://skillhub.cn) 搜索 `session-fork` 安装。
 
-> ⚠️ **渠道版本说明**：SkillHub 渠道当前为稳定版（v1.4.x，基础打分支能力）；
-> **v2.x 引擎版（fork-core：谱系/--tree/跨产品适配器）为内部验证中，尚未在 SkillHub 发布**。
-> 需要完整 2.x 能力请用 pip / git 安装。
+> **渠道版本**：SkillHub 与 GitHub 均已发布 v2.x（fork-core 引擎版）。Claude Code 适配器为**验证中**（fixture 级通过，真实 CLI 会话验证待做，暂不宣传）。
 
 ### 方式三：GitHub 源码（任意目录）
 
@@ -104,7 +102,14 @@ fork --fix <分支会话ID>
 
 # 先预览截断点，不写入
 fork --session current --dry-run
+
+# 真库体检（发布/打分支前必跑）：存储/schema/真实数据替换/谱系 全项检查
+fork --verify            # 别名 --doctor；任何一项 FAIL 则 exit 1 拦截
 ```
+
+> **真库验证是必须项**：`fork --verify` 做 L2 真库体检——数据库存在性 + sessions 表关键
+> NOT NULL 约束 + 真实会话数据上递归 id 替换零残留 + 谱系索引可读。发布前必跑；
+> 任一 FAIL 会以 exit 1 拦截（防止"fixture 通过 ≠ 真库验证"的问题漏到线上）。
 
 ## 工作原理
 

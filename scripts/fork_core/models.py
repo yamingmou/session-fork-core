@@ -45,3 +45,19 @@ class ForkResult:
     backup_dir: Optional[str] = None
     error: Optional[str] = None
     replacements: int = 0
+
+
+@dataclass
+class VerifyItem:
+    """fork --verify 体检的单项结果。
+
+    name   — 检查项名称（存储/schema/真实数据替换/谱系索引）
+    level  — 该项达到的验证级别（L1 fixture / L2 真库 / L3 产品终验）
+    ok     — 是否通过
+    detail — 结果描述（PASS 的证据 / FAIL 的原因）
+    """
+
+    name: str
+    level: str
+    ok: bool
+    detail: str

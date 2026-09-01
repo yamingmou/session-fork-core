@@ -4,6 +4,7 @@
 WorkBuddy / Claude Code / Codex 的差异全部被 adapter 吸收。
 """
 
+import copy
 import json
 import os
 import shutil
@@ -11,7 +12,7 @@ import time
 import uuid
 
 from .adapters.base import TranscriptionAdapter
-from .models import ForkResult, SessionMeta
+from .models import ForkResult, SessionMeta, VerifyItem
 
 # 备份目录默认 ~/.workbuddy/backups（可通过环境变量覆盖）
 DEFAULT_BACKUPS_DIR = os.path.join(os.path.expanduser("~"), ".workbuddy", "backups")
@@ -121,6 +122,111 @@ def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) ->
     if not (adapter.is_assistant_message(last) and adapter.get_text(last).strip()):
         errs.append("last line has no assistant output_text")
     return errs
+
+
+# ----------------------------------------------------------------------
+# fork --verify / --doctor：真库体检（把"真库验证"从靠用户兜底变成内置强制检查）
+# ----------------------------------------------------------------------
+
+def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str]]:
+    """收集 adapter 存储下最新的真实会话 transcript（路径, session_id）。
+
+    注意：可能包含已创建的分支文件——它们也是真实数据，同样值得验证。
+    """
+    found = []
+    projects = getattr(adapter, "PROJECTS_DIR", None)
+    if not projects or not os.path.isdir(projects):
+        return found
+    for slug in os.listdir(projects):
+        p = os.path.join(projects, slug)
+        if not os.path.isdir(p):
+            continue
+        for fn in os.listdir(p):
+            if fn.endswith(".jsonl"):
+                found.append((os.path.join(p, fn), fn[:-6]))
+    found.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
+    return found[:limit]
+
+
+def _find_residue(objs: list[dict], old_id: str, raw_keys: set) -> list[str]:
+    """递归找旧 id 在非黑名单字段中的残留位置（黑名单 = 原始内容键，允许含旧 id）。"""
+    hits = []
+
+    def walk(node, path):
+        if isinstance(node, str):
+            if old_id in node:
+                hits.append(path or "(root)")
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                if k in raw_keys:
+                    continue
+                walk(v, f"{path}.{k}" if path else k)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]")
+
+    for i, o in enumerate(objs, 1):
+        walk(o, f"L{i}")
+    return hits
+
+
+def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
+    """真库体检（fork --verify / --doctor）。
+
+    检查项：
+    1. 存储层（adapter.verify_storage）：数据库/transcript 目录存在性 + schema 约束
+    2. 真实数据替换验证（L2）：取最新真实会话 → 定位截断点 → rewrite_ids 全量替换
+       → 断言非黑名单字段零残留——这就是 v2.2.0 两个 bug 的自动拦截器
+    3. 谱系索引可读（旁路 fork.lineage.json / fork.branches.json）
+    """
+    items = []
+
+    # 1. 存储层
+    items.extend(adapter.verify_storage() or [])
+
+    # 2. 真实数据替换验证（L2）
+    real = _collect_real_transcripts(adapter)
+    if not real:
+        items.append(VerifyItem(
+            "真实数据替换验证", "L1", False,
+            "无真实会话可用（仅 fixture 级）。请先用产品产生会话：WorkBuddy 直接对话 / Claude Code 在终端跑 claude 命令",
+        ))
+    else:
+        for path, sid in real:
+            lines = _load_lines(path)
+            if not lines:
+                items.append(VerifyItem(f"真实数据验证 {sid[:8]}", "L2", False, "transcript 为空或不可读"))
+                continue
+            try:
+                cut, total = locate_last_reply(adapter, lines)
+            except SystemExit as e:
+                items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
+                continue
+            new_id = "verify-" + uuid.uuid4().hex[:12]
+            rewritten, n = adapter.rewrite_ids(copy.deepcopy(lines[:cut]), sid, new_id)
+            raw_keys = getattr(adapter, "_RAW_KEYS", set())
+            residue = _find_residue(rewritten, sid, raw_keys)
+            ok = not residue
+            detail = f"{n} 处替换，截断点 L{cut}/{total}"
+            if residue:
+                detail += f"，残留 {len(residue)} 处：{residue[:3]}"
+            items.append(VerifyItem(f"真实数据替换 {sid[:8]}", "L2", ok, detail))
+
+    # 3. 谱系索引
+    try:
+        if hasattr(adapter, "_read_index"):
+            data = adapter._read_index()
+            branches = data.get("branches", [])
+            items.append(VerifyItem("谱系索引", "L2", True, f"可读（{len(branches)} 个分支记录）"))
+        elif hasattr(adapter, "_lineage_get"):
+            data = adapter._lineage_get()
+            items.append(VerifyItem("谱系索引", "L2", True, f"可读（{len(data.get('forks', []))} 个分支记录）"))
+        else:
+            items.append(VerifyItem("谱系索引", "L1", True, "adapter 无旁路索引（跳过）"))
+    except Exception as e:
+        items.append(VerifyItem("谱系索引", "L2", False, str(e)))
+
+    return items
 
 
 def create_fork(

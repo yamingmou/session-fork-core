@@ -15,7 +15,7 @@ projects.json 旁路索引（fork.branches.json），不污染 Claude Code 自�
 import json
 import os
 
-from ..models import SessionMeta
+from ..models import SessionMeta, VerifyItem
 from .base import TranscriptionAdapter
 
 HOME = os.path.expanduser("~")
@@ -27,6 +27,9 @@ BRANCH_INDEX = os.path.join(CLAUDE_DIR, "fork.branches.json")
 
 class ClaudeCodeAdapter(TranscriptionAdapter):
     name = "claude-code"
+    # 模块级常量的类属性镜像（engine 体检用 getattr(adapter, ...) 访问）
+    PROJECTS_DIR = PROJECTS_DIR
+    CLAUDE_DIR = CLAUDE_DIR
 
     # ------------------------------------------------------------------
     # A. 定位
@@ -200,3 +203,22 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
 
     def is_branch_name(self, title: str) -> bool:
         return True  # Claude 分支在旁路索引里显式记录，不需要标题启发式
+
+    def verify_storage(self) -> list[VerifyItem]:
+        """存储层体检：~/.claude/projects/ 存在性 + 真实会话数。
+
+        会话数 0 → L1（无真实数据，仅 fixture 级）；>0 → L2 可做真库验证。
+        """
+        n = 0
+        ok = os.path.isdir(PROJECTS_DIR)
+        if ok:
+            for slug in os.listdir(PROJECTS_DIR):
+                p = os.path.join(PROJECTS_DIR, slug)
+                if os.path.isdir(p):
+                    n += len([f for f in os.listdir(p) if f.endswith(".jsonl")])
+        level = "L2" if n else "L1"
+        items = [VerifyItem(
+            "transcript 目录", level, ok,
+            f"{PROJECTS_DIR}（{n} 个会话）" if ok else "缺失（无 Claude CLI 会话——请先跑 claude 产生会话）",
+        )]
+        return items

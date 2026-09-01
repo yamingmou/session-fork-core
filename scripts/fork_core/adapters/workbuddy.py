@@ -14,7 +14,7 @@ import json
 import os
 import sqlite3
 
-from ..models import SessionMeta
+from ..models import SessionMeta, VerifyItem
 from .base import TranscriptionAdapter
 
 HOME = os.path.expanduser("~")
@@ -26,6 +26,9 @@ LINEAGE_PATH = os.path.join(HOME, ".workbuddy", "fork.lineage.json")
 
 class WorkBuddyAdapter(TranscriptionAdapter):
     name = "workbuddy"
+    # 模块级常量的类属性镜像（engine 体检用 getattr(adapter, ...) 访问）
+    PROJECTS_DIR = PROJECTS_DIR
+    DB_PATH = DB_PATH
 
     # ------------------------------------------------------------------
     # A. 定位
@@ -303,3 +306,35 @@ class WorkBuddyAdapter(TranscriptionAdapter):
 
     def is_branch_name(self, title: str) -> bool:
         return ("分支" in title) or ("·" in title) or ("fork" in title.lower())
+
+    def verify_storage(self) -> list[VerifyItem]:
+        """存储层体检：数据库存在性 + sessions 表关键 NOT NULL 约束（真库对齐）。
+
+        约束集与真库 ~/.workbuddy/workbuddy.db 对齐——v2.2.0 cwd NOT NULL 崩溃
+        的自动拦截器：约束缺失 → FAIL，防止测试库松约束问题再漏到线上。
+        """
+        items = []
+        db_ok = os.path.exists(DB_PATH)
+        items.append(VerifyItem("数据库", "L2", db_ok, DB_PATH if db_ok else f"缺失（{DB_PATH}）"))
+        if db_ok:
+            try:
+                conn = self._connect()
+                cols = {
+                    r["name"]: r["notnull"]
+                    for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+                }
+                conn.close()
+                required = {"cwd", "user_id", "status", "created_at", "updated_at", "is_playground"}
+                missing = sorted(c for c in required if not cols.get(c))
+                items.append(VerifyItem(
+                    "sessions schema", "L2", not missing,
+                    "关键 NOT NULL 约束齐全" if not missing else f"缺 NOT NULL 约束: {missing}",
+                ))
+            except Exception as e:
+                items.append(VerifyItem("sessions schema", "L2", False, str(e)))
+        projects_ok = os.path.isdir(PROJECTS_DIR)
+        items.append(VerifyItem(
+            "transcript 目录", "L2", projects_ok,
+            PROJECTS_DIR if projects_ok else "缺失",
+        ))
+        return items
