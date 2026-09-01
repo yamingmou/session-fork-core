@@ -19,26 +19,46 @@ os.makedirs(proj_dir, exist_ok=True)
 wb_mod.DB_PATH = db_path
 wb_mod.PROJECTS_DIR = os.path.join(tmpdir, "projects")
 
-# 造源会话行（模拟 sessions 表结构）
+# 造源会话行（schema 完全对齐真库 ~/.workbuddy/workbuddy.db sessions 表）
 conn = sqlite3.connect(db_path)
 conn.execute(
     """CREATE TABLE sessions (
-        id TEXT, custom_title TEXT, status TEXT, created_at INTEGER,
-        updated_at INTEGER, last_activity_at INTEGER, cwd TEXT)"""
+        id TEXT, cwd TEXT NOT NULL, user_id TEXT NOT NULL, title TEXT,
+        custom_title TEXT, status TEXT NOT NULL DEFAULT 'Pending',
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER,
+        is_playground INTEGER NOT NULL DEFAULT 0, source_mode TEXT,
+        is_background_automation INTEGER, mode TEXT, model TEXT, expert_id TEXT,
+        expert_locale TEXT, expert_runtime_identity TEXT, expert_marketplace TEXT,
+        permission_mode TEXT, last_activity_at INTEGER, use_sandbox_cli INTEGER,
+        project_id TEXT, plugin_context_json TEXT,
+        last_user_prompt_expert_selection TEXT, context_window INTEGER,
+        thought_level TEXT, addon_selection TEXT, session_settings TEXT)"""
 )
 src_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 now = 1786000000000
 conn.execute(
-    "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
-    (src_id, "测试源会话", "working", now, now, now, "/tmp/test"),
+    "INSERT INTO sessions (id, cwd, user_id, title, custom_title, status, created_at, updated_at, is_playground) "
+    "VALUES (?,?,?,?,?,?,?,?,?)",
+    (src_id, "/tmp/test", "test-user", "测试源会话标题", "测试源会话", "working", now, now, 0),
 )
 conn.commit()
 conn.close()
 
-# 造 transcript 文件
+# 造 transcript 文件（含真实 WorkBuddy 字段结构：tool 消息的 output/arguments/
+# argumentsDisplayText/renderer.value/error.message —— 正是白名单替换漏掉的字段）
 lines = [
     {"type": "message", "role": "user", "sessionId": src_id,
      "content": [{"type": "input_text", "text": "你好"}]},
+    {"type": "function_call", "sessionId": src_id, "name": "bash",
+     "arguments": f'{{"command": "echo {src_id}"}}',
+     "output": {"text": f"输出里引用了 {src_id}"},
+     "providerData": {
+         "argumentsDisplayText": f"echo {src_id}",
+         "toolResult": {
+             "content": f"结果 {src_id}",
+             "renderer": {"type": "text", "value": f"渲染 {src_id}"},
+         },
+     }},
     {"type": "message", "role": "assistant", "sessionId": src_id,
      "content": [{"type": "output_text", "text": "你好！我是助手"}]},
     {"type": "message", "role": "user", "sessionId": src_id,
@@ -118,3 +138,39 @@ print(f"✓ lineage_tree: {len(tree)} 节点（根→分支→孙分支）")
 import shutil
 shutil.rmtree(tmpdir)
 print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树）")
+
+# ============================================================
+# 10. rewrite_ids 专项：覆盖全部可读字段 + rawContent 黑名单
+# ============================================================
+import copy
+
+adapter2 = WorkBuddyAdapter()  # 不依赖 db，纯函数级测试
+oid, nid = "old-1111-2222-3333-4444", "new-aaaa-bbbb-cccc-dddd"
+sample = [
+    {
+        "sessionId": oid, "type": "message", "role": "assistant",
+        "content": [{"type": "output_text", "text": f"引用 {oid} 在正文"}],
+        "output": {"text": f"output 里的 {oid}"},
+        "arguments": f'{{"sessionId": "{oid}"}}',
+        "providerData": {
+            "argumentsDisplayText": f"node x.mjs {oid}",
+            "error": {"code": 1, "message": f"错误 {oid}"},
+            "toolResult": {"content": f"结果 {oid}", "renderer": {"type": "x", "value": f"渲染 {oid}"}},
+            "rawResponse": f"原始响应 {oid}（不应改写）",
+        },
+    },
+    {"sessionId": oid, "type": "file-history-snapshot", "rawContent": f"原始内容 {oid}（不应改写）"},
+]
+out, n = adapter2.rewrite_ids(copy.deepcopy(sample), oid, nid)
+s = out[0]
+assert s["sessionId"] == nid, "sessionId 未替换"
+assert oid not in s["content"][0]["text"] and nid in s["content"][0]["text"], "content.text 未替换"
+assert oid not in s["output"]["text"], "output.text 未替换"
+assert oid not in s["arguments"], "顶层 arguments 未替换"
+assert oid not in s["providerData"]["argumentsDisplayText"], "argumentsDisplayText 未替换"
+assert oid not in s["providerData"]["error"]["message"], "error.message 未替换"
+assert oid not in s["providerData"]["toolResult"]["content"], "toolResult.content 未替换"
+assert oid not in s["providerData"]["toolResult"]["renderer"]["value"], "renderer.value 未替换"
+assert oid in s["providerData"]["rawResponse"], "rawResponse 被改写（违反安全承诺）"
+assert oid in out[1]["rawContent"], "rawContent 被改写（违反安全承诺）"
+print(f"✓ rewrite_ids 专项: {n} 处替换，rawContent/rawResponse 黑名单生效")

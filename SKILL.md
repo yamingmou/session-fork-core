@@ -3,7 +3,7 @@ name: session-fork
 slug: session-fork
 displayName: 会话分叉（打分支）
 description: 把当前（或指定）AI 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。基于 fork-core 通用引擎（Fork = Projection Derivative 投影派生），跨产品可用（WorkBuddy 适配器默认，Claude Code 等适配器验证中）。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 2.1.0
+version: 2.2.0
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, claude-code, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
@@ -23,7 +23,7 @@ agent_created: true
 - **存储级复制**：新 jsonl 文件 + 会话索引新行记录，不是"链接/指向"——原会话后续写入不会污染分支；
 - **谱系可追溯**：`parent_id` + `at_seq`（快照点）记录分支从哪派生，`--list --tree` 展示分叉树；
 - **快照点可回**：分支可再派生（从分支再 fork = 新投影继续演进）；
-- **内置安全**：执行前自动备份（仅源 jsonl），结构化字段级 id 替换（不碰 rawContent），自带完整性校验；
+- **内置安全**：执行前自动备份（仅源 jsonl），递归 id 替换（rawContent/rawResponse 等原始内容黑名单不碰），自带完整性校验；
 - **可预览**：`--dry-run` 先确认截断点定位，再正式执行。
 
 ## 内部架构（通用引擎）
@@ -36,8 +36,8 @@ fork_core/                    # 通用引擎（与产品无关）
 ├── models.py                 # SessionMeta / ForkResult 契约
 └── adapters/
     ├── base.py               # TranscriptionAdapter 接口
-    ├── workbuddy.py          # WorkBuddy 适配器（默认）
-    └── claude_code.py        # 另一产品适配器（验证用，不宣传）
+    ├── workbuddy.py          # WorkBuddy 适配器（默认，真库实测）
+    └── claude_code.py        # Claude Code 适配器（修改中/验证中：fixture 级验证通过，真实 CLI 会话验证待做，暂不宣传）
 ```
 
 - 核心逻辑（默认/--match/--line/--request-id 定位、结构化 id 替换、完整性校验）全部在引擎层，与存储格式无关；
@@ -136,7 +136,7 @@ fork --fix <分支会话ID>
 fork --session current --adapter claude-code --name "<分支名>"
 ```
 
-脚本自动完成：备份（仅源 jsonl 到 `~/.workbuddy/backups/<时间戳>/`）→ 定位截断点 → 截取 1..截断点 → 顶层 `sessionId` 改为新 UUID → **结构化字段级 id 替换**（只改 sessionId/output_text/toolResult.content 等已知字段，不碰 rawContent）→ sessions 表插入新行（复制源行，改 id/custom_title/status=terminated/时间戳）→ 验证 → **文件权限保持 0644**（不自动锁只读，用户可按需手动锁定）。
+脚本自动完成：备份（仅源 jsonl 到 `~/.workbuddy/backups/<时间戳>/`）→ 定位截断点 → 截取 1..截断点 → 顶层 `sessionId` 改为新 UUID → **递归 id 替换**（覆盖 output/arguments/renderer/error 等全部可读字段，rawContent/rawResponse 等原始内容黑名单不碰）→ sessions 表插入新行（复制源行，改 id/custom_title/status=terminated/时间戳）→ 验证 → **文件权限保持 0644**（不自动锁只读，用户可按需手动锁定）。
 
 先跑 `--dry-run` 确认截断点定位正确，再正式执行（推荐）。
 
@@ -187,7 +187,7 @@ fork --session current --adapter claude-code --name "<分支名>"
 
 1. **用户说了断点 → 必须用 --match/--line，绝对不能用默认模式**：默认模式找的是"最后一条 assistant 回复"（文件末尾），不是用户指定的中间位置。曾因用默认模式执行"截断到 XXX 产生处"的指令，导致分支包含了不该有的后续对话（多出 13-22 行），需要事后用 --fix 修复。
 2. **默认截断点 = 上一轮对话输出结束**：用户只说"打分支"没指定断点时，默认截到用户最后一条消息之前最后一条完整 assistant 回复的末尾（脚本默认模式自动定位，dry-run 验证即可）。
-3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output_text.text` / `providerData.toolResult.content` / `tool_use.input` 等字段里都会出现旧 id。v1.4.0 起使用结构化字段级替换（只改上述已知字段），不再对 rawContent 等原始内容做字符串级改写。
+3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `arguments` / `argumentsDisplayText` / `toolResult.renderer.value` / `error.message` 等字段都会出现旧 id。v2.2.0 起使用**递归 id 替换**（覆盖全部可读字段，仅 rawContent/rawResponse 等原始内容黑名单不碰），WorkBuddy 与 Claude 两个 adapter 机制一致。实测一次打分支替换 2557 处。
 4. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
 5. **WorkBuddy 会追加消息到分支文件**：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户手动 `chmod 444`），已有分支可用 --fix 修复。
 6. **快照分支特性**：复制发生在读取时刻，原会话之后的新消息不会进分支——这是正常行为，不是丢数据。

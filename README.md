@@ -6,7 +6,7 @@
 
 - 名称：`session-fork`（会话分叉 / 打分支）｜引擎：`fork-core`（跨产品通用引擎）
 - 适用平台：WorkBuddy（默认适配器）· Claude Code（验证中）· Codex / opencode（规划中）
-- 版本：2.1.0
+- 版本：2.2.0
 - 作者：OfferKuai（Offer快）团队
 - 许可证：MIT
 
@@ -17,7 +17,7 @@
 - **存储级复制**：新 jsonl 文件 + sessions 表新行记录，原会话后续写入不会污染分支；
 - **谱系可追溯**：`parent_id` + `at_seq`（快照点）记录每个分支从哪派生，`--list --tree` 展示分叉树；
 - **快照点可回**：分支可再派生（从分支再 fork = 新投影继续演进，谱系树延伸）；
-- **内置安全**：执行前自动备份（仅源 jsonl），结构化字段级 id 替换（不碰 rawContent），自带完整性校验；
+- **内置安全**：执行前自动备份（仅源 jsonl），递归 id 替换（rawContent/rawResponse 等原始内容黑名单不碰），自带完整性校验；
 - **可预览**：`--dry-run` 先确认截断点，再正式执行。
 
 ## 安装
@@ -111,7 +111,7 @@ fork --session current --dry-run
 1. 定位会话 transcript（`~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl`）；
 2. 定位截断点：默认 = 最后一条完整 assistant 回复的末尾；`--request-id`/`--match`/`--line` 可精确指定；
 3. 备份源 jsonl 到 `~/.workbuddy/backups/<时间戳>/`（不复制数据库）；
-4. 截取前缀（1..截断点），顶层 `sessionId` 改为新 UUID，**结构化字段级 id 替换**（只改 `sessionId`/`output_text.text`/`toolResult.content`/`tool_use.input` 等已知字段，不碰 rawContent）；
+4. 截取前缀（1..截断点），顶层 `sessionId` 改为新 UUID，**递归 id 替换**（覆盖 output/arguments/renderer/error 等全部可读字段，rawContent/rawResponse 等原始内容黑名单不碰）；
 5. sessions 表插入新行（复制源行，status=terminated）；
 6. **谱系记录**：`~/.workbuddy/fork.lineage.json` 旁路索引写入 parent_id + at_seq（快照点），不污染官方 schema；
 7. 校验：可解析性、sessionId 一致性、零旧 id 残留、末条完整性。
@@ -126,8 +126,8 @@ fork_core/                    # 通用引擎（与产品无关）
 ├── models.py                 # SessionMeta（含 parent_id）/ ForkResult 契约
 └── adapters/
     ├── base.py               # TranscriptionAdapter 接口
-    ├── workbuddy.py          # WorkBuddy 适配器（默认）
-    └── claude_code.py        # Claude Code 适配器（验证中）
+    ├── workbuddy.py          # WorkBuddy 适配器（默认，真库实测）
+    └── claude_code.py        # Claude Code 适配器（修改中/验证中：fixture 级通过，真实 CLI 会话验证待做，暂不宣传）
 ```
 
 - 核心逻辑（截断定位、结构化 id 替换、完整性校验、谱系）全部在引擎层，与存储格式无关；
@@ -140,7 +140,7 @@ fork_core/                    # 通用引擎（与产品无关）
 
 **已实现（会话级分支）**
 - ✅ 存储级复制 + 4 种截断定位（默认/--match/--line/--request-id）
-- ✅ 结构化 id 替换（不碰 rawContent）+ 完整性校验 + 自动备份
+- ✅ 递归 id 替换（rawContent 黑名单）+ 完整性校验 + 自动备份
 - ✅ 谱系可追溯（parent_id + at_seq 快照点）+ 分叉树展示
 - ✅ 快照点可回（分支可再派生）
 - ✅ 跨平台安装（pip / SkillHub / git clone）

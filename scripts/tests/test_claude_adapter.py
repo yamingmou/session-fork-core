@@ -16,16 +16,21 @@ src_id = "11111111-1111-1111-1111-111111111111"
 path = os.path.join(proj_dir, src_id + ".jsonl")
 
 lines = [
-    {"type": "user", "uuid": "u1", "parentUuid": None, "sessionId": src_id,
-     "message": {"content": [{"type": "text", "text": "帮我写个脚本"}]}},
-    {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": src_id,
-     "message": {"content": [{"type": "text", "text": "好的，这是方案一"}]}},
-    {"type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": src_id,
-     "message": {"content": [{"type": "text", "text": "换个思路，方案二"}]}},
-    {"type": "assistant", "uuid": "a2", "parentUuid": "u2", "sessionId": src_id,
-     "message": {"content": [{"type": "text", "text": "方案二：改造成本更低"}]}},
-    {"type": "user", "uuid": "u3", "parentUuid": "a2", "sessionId": src_id,
-     "message": {"content": [{"type": "text", "text": "打分支，命名『测试分支』"}]}},
+    # 真实 Claude Code transcript 结构：text / tool_use(input) / tool_result(content)
+    {"type": "user", "uuid": "u1", "parentUuid": None, "sessionId": src_id, "cwd": "/tmp",
+     "message": {"role": "user", "content": [{"type": "text", "text": f"帮我看看会话 {src_id} 的问题"}]}},
+    {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": src_id, "cwd": "/tmp",
+     "message": {"role": "assistant", "content": [
+         {"type": "text", "text": "好的，先查一下"},
+         {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": f"echo {src_id}"}},
+     ]}},
+    {"type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": src_id, "cwd": "/tmp",
+     "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                               "content": f"命令输出包含 {src_id}"}]}},
+    {"type": "assistant", "uuid": "a2", "parentUuid": "u2", "sessionId": src_id, "cwd": "/tmp",
+     "message": {"role": "assistant", "content": [{"type": "text", "text": "方案二：改造成本更低"}]}},
+    {"type": "user", "uuid": "u3", "parentUuid": "a2", "sessionId": src_id, "cwd": "/tmp",
+     "message": {"role": "user", "content": [{"type": "text", "text": "打分支，命名『测试分支』"}]}},
 ]
 with open(path, "w") as f:
     for l in lines:
@@ -72,12 +77,10 @@ from fork_core.engine import create_fork
 r = create_fork(adapter, src_id, name="测试分支", dry_run=False)
 print(f"✓ create_fork: {r.new_id} cut={r.cut} name={r.name!r}")
 assert os.path.exists(r.dst_path), "dst not written"
-# 验证分支文件 sessionId 全部替换
-with open(r.dst_path) as f:
-    for l in f:
-        o = json.loads(l)
-        assert o["sessionId"] == r.new_id, f"残留旧 id: {o.get('sessionId')}"
-print("✓ 分支文件 sessionId 全部替换，无残留")
+# 验证分支文件 sessionId 全部替换 + 全文件零旧 id 残留
+raw_all = open(r.dst_path).read()
+assert src_id not in raw_all, "分支文件仍有旧 id 残留（text/tool_use.input/tool_result 引用未替换）"
+print("✓ 分支文件 sessionId 全替换 + 全文件零残留（text/tool_use/tool_result 引用）")
 
 # 7. list_branches（旁路索引）
 branches = adapter.list_branches()

@@ -95,22 +95,39 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(json.dumps(o, ensure_ascii=False) for o in lines) + "\n")
 
+    # 原始内容键：不改写（API 原始响应/原始内容），其余字段递归全替换
+    _RAW_KEYS = {"rawContent", "rawResponse", "raw", "originalContent", "original"}
+
     def rewrite_ids(self, lines: list[dict], old_id: str, new_id: str) -> tuple[list[dict], int]:
-        """Claude Code：sessionId / uuid 链 / message 内引用。"""
+        """结构化字段级替换（递归 + 原始内容黑名单）。
+
+        覆盖 sessionId / message.content[].text / tool_use.input /
+        tool_result.content 等全部可读字段；跳过 rawContent / rawResponse 等
+        原始内容键（与 WorkBuddy adapter 机制一致）。
+        注意：uuid / parentUuid 是消息级标识，跨会话无冲突，不替换。
+        """
         replacements = 0
-        for o in lines:
-            if o.get("sessionId") == old_id:
-                o["sessionId"] = new_id
-                replacements += 1
-            msg = o.get("message") or {}
-            # tool_use.input 内的引用
-            for c in msg.get("content", []) or []:
-                if isinstance(c, dict) and isinstance(c.get("input"), dict):
-                    for k, v in c["input"].items():
-                        if isinstance(v, str) and old_id in v:
-                            c["input"][k] = v.replace(old_id, new_id)
-                            replacements += 1
-        return lines, replacements
+
+        def walk(node):
+            nonlocal replacements
+            if isinstance(node, str):
+                if old_id in node:
+                    replacements += 1
+                    return node.replace(old_id, new_id)
+                return node
+            if isinstance(node, dict):
+                out = {}
+                for k, v in node.items():
+                    if k in self._RAW_KEYS:
+                        out[k] = v
+                    else:
+                        out[k] = walk(v)
+                return out
+            if isinstance(node, list):
+                return [walk(v) for v in node]
+            return node
+
+        return [walk(o) for o in lines], replacements
 
     def extract_title_hint(self, lines: list[dict]) -> str:
         for o in reversed(lines):
