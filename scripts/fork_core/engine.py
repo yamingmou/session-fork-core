@@ -61,7 +61,11 @@ def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None
             if adapter.is_assistant_message(o) and adapter.get_request_id(o) == request_id:
                 cand = i  # keep last match
         if cand is None:
-            raise SystemExit(f"request_id not found in any assistant reply: {request_id!r}")
+            raise SystemExit(
+                f"request_id not found in any assistant reply: {request_id!r}\n"
+                "  Hint: 该请求 ID 可能属于其他会话/工作区——复制 JSON 里 conversationId 即源会话 ID，"
+                "用 --session <conversationId> 指定（或用 --request-id 自动反查源会话）"
+            )
     elif line_no is not None:
         cand = line_no
         if not (1 <= cand <= n):
@@ -243,6 +247,14 @@ def create_fork(
 
     流程：resolve → find → locate → backup → truncate+rewrite → write → register → verify
     """
+    # request-id 模式：用户复制 UI "请求 ID" 打分支，可能不知道源会话（跨 workspace）。
+    # 若 --session 是 current（未显式指定源），先全盘反查该 request-id 属于哪个会话，
+    # 自动定位源——这样用户只需贴复制的 ID 就能打分支，无需理解 session 概念。
+    if request_id and (not session_ref or session_ref == "current"):
+        auto_src = adapter.find_session_by_request_id(request_id)
+        if auto_src:
+            session_ref = auto_src
+
     src_id = adapter.resolve_session(session_ref)
     transcript, slug = adapter.find_transcript(src_id)
     if not transcript:
@@ -259,6 +271,12 @@ def create_fork(
 
     if match_text or line_no or request_id:
         cut, total = locate_split_point(adapter, lines, match_text, line_no, request_id)
+        if cut is None:
+            raise SystemExit(
+                f"request_id {request_id!r} not found in session {src_id}\n"
+                "  - 若该请求 ID 复制自其他会话/产品：请显式指定 --session <conversationId>\n"
+                "    （UI 复制的 JSON 里 conversationId 即源会话 ID）"
+            )
         how = (
             f"match={match_text!r}" if match_text
             else (f"line={line_no}" if line_no else f"request_id={request_id!r}")

@@ -63,6 +63,47 @@ class WorkBuddyAdapter(TranscriptionAdapter):
                 return cand, slug
         return None, None
 
+    def find_session_by_request_id(self, request_id: str) -> str | None:
+        """全盘反查：哪个会话含该 conversationRequestId（跨 workspace）。
+
+        用户从 UI "复制请求 ID" 后只想打分支，不知道源会话 id——脚本自动定位。
+        conversationId（复制 JSON 里）== 会话文件名 id，全盘搜 providerData 命中即可。
+
+        性能：按 mtime 新→旧搜索（用户复制的 ID 通常来自最近操作的会话），命中即停，
+        避免字母序全盘扫描（60+ workspace 全扫 ~1.3s）。
+        """
+        if not os.path.isdir(PROJECTS_DIR):
+            return None
+        # 收集全部 jsonl，按 mtime 新→旧排序（只 stat 目录结构，不读内容，快）
+        candidates = []
+        for slug in os.listdir(PROJECTS_DIR):
+            d = os.path.join(PROJECTS_DIR, slug)
+            if not os.path.isdir(d):
+                continue
+            for fn in os.listdir(d):
+                if not fn.endswith(".jsonl"):
+                    continue
+                fp = os.path.join(d, fn)
+                try:
+                    candidates.append((os.path.getmtime(fp), fp, fn[:-6]))
+                except OSError:
+                    continue
+        candidates.sort(reverse=True)  # 新 → 旧
+        for _, fp, sid in candidates:
+            try:
+                for l in open(fp, encoding="utf-8"):
+                    if request_id in l:
+                        try:
+                            o = json.loads(l)
+                            pd = o.get("providerData") or {}
+                            if pd.get("conversationRequestId") == request_id:
+                                return sid
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        return None
+
     # ------------------------------------------------------------------
     # B. 消息判定
     # ------------------------------------------------------------------

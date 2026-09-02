@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fork-core"
-version = "2.3.0"
+version = "2.3.2"
 description = "Cross-product session forking engine (Fork = Projection Derivative). WorkBuddy / Claude Code / Codex adapters."
 readme = "README.md"
 license = { text = "MIT" }

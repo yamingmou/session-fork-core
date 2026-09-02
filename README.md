@@ -6,7 +6,7 @@
 
 - 名称：`session-fork`（会话分叉 / 打分支）｜引擎：`fork-core`（跨产品通用引擎）
 - 适用平台：WorkBuddy（默认适配器）· Claude Code（验证中）· Codex / opencode（规划中）
-- 版本：2.3.0
+- 版本：2.3.2
 - 作者：OfferKuai（Offer快）团队
 - 许可证：MIT
 

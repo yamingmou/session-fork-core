@@ -12,7 +12,7 @@ import time
 
 from . import available, create_fork, get_adapter, list_forks
 
-VERSION = "2.3.0"
+VERSION = "2.3.2"
 
 
 def print_tree(metas) -> None:
@@ -93,12 +93,15 @@ def main(argv=None) -> None:
         run_fix(args.fix)
         return
 
-    if not args.session:
-        ap.error("--session is required (or use --list)")
+    if not args.session and not args.request_id:
+        ap.error("--session is required (or use --list / --request-id auto-resolve)")
+
+    # request-id 模式默认源 = current（引擎会自动反查该 ID 所属的真实会话）
+    session_ref = args.session or "current"
 
     r = create_fork(
         adapter=adapter,
-        session_ref=args.session,
+        session_ref=session_ref,
         match_text=args.match,
         line_no=args.line,
         request_id=args.request_id,

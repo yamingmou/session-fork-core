@@ -35,6 +35,15 @@ class TranscriptionAdapter:
         """把 'current' 解析为具体会话 id；否则原样返回。"""
         raise NotImplementedError
 
+    def find_session_by_request_id(self, request_id: str) -> Optional[str]:
+        """全盘反查含该 conversationRequestId 的会话（跨 workspace）。可选实现。
+
+        用途：用户复制 UI 的"请求 ID"后打分支，但不知道源会话 id——
+        引擎在 request-id 模式下优先调用本方法自动定位源会话。
+        默认返回 None（不支持反查的产品，需用户显式 --session）。
+        """
+        return None
+
     # ------------------------------------------------------------------
     # B. 消息判定（供通用截断点定位逻辑使用）
     # ------------------------------------------------------------------
