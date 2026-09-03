@@ -26,9 +26,13 @@ LINEAGE_PATH = os.path.join(HOME, ".workbuddy", "fork.lineage.json")
 
 class WorkBuddyAdapter(TranscriptionAdapter):
     name = "workbuddy"
-    # 模块级常量的类属性镜像（engine 体检用 getattr(adapter, ...) 访问）
-    PROJECTS_DIR = PROJECTS_DIR
-    DB_PATH = DB_PATH
+
+    def __init__(self):
+        # 实例化时快照模块级路径（engine 用 getattr(adapter,...) 取实例属性；
+        # 测试通过改模块级 + 实例化即隔离，双处一致，避免 import 快照漂移）
+        self.PROJECTS_DIR = PROJECTS_DIR
+        self.DB_PATH = DB_PATH
+        self.LINEAGE_PATH = LINEAGE_PATH
 
     # ------------------------------------------------------------------
     # A. 定位
@@ -69,12 +73,24 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         用户从 UI "复制请求 ID" 后只想打分支，不知道源会话 id——脚本自动定位。
         conversationId（复制 JSON 里）== 会话文件名 id，全盘搜 providerData 命中即可。
 
-        性能：按 mtime 新→旧搜索（用户复制的 ID 通常来自最近操作的会话），命中即停，
-        避免字母序全盘扫描（60+ workspace 全扫 ~1.3s）。
+        歧义处理（2026-09-03 独立审查发现）：分支复制会继承源会话的 request id
+        （rewrite 只换 sessionId 不剥离 conversationRequestId）——若命中的最新文件是
+        分支，会把 request-id 解析到后代分支而非源会话 → 谱系错乱。
+        解决：收集全部命中，优先返回**非分支**（源会话）；仅当全部命中都是分支时才返回分支。
+
+        性能：按 mtime 新→旧搜索（用户复制的 ID 通常来自最近操作的会话），
+        命中非分支即停；分支命中先暂存继续找源。
         """
         if not os.path.isdir(PROJECTS_DIR):
             return None
-        # 收集全部 jsonl，按 mtime 新→旧排序（只 stat 目录结构，不读内容，快）
+        # 分支集合（旁路谱系索引；_lineage_get 返回 {fork_id: {...}}）
+        branch_ids: set[str] = set()
+        try:
+            lineage = self._lineage_get()
+            branch_ids = set(lineage.keys())
+        except Exception:
+            pass
+        # 收集全部 jsonl，按 mtime 新→旧排序
         candidates = []
         for slug in os.listdir(PROJECTS_DIR):
             d = os.path.join(PROJECTS_DIR, slug)
@@ -89,6 +105,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
                 except OSError:
                     continue
         candidates.sort(reverse=True)  # 新 → 旧
+        branch_hit = None
         for _, fp, sid in candidates:
             try:
                 for l in open(fp, encoding="utf-8"):
@@ -97,12 +114,16 @@ class WorkBuddyAdapter(TranscriptionAdapter):
                             o = json.loads(l)
                             pd = o.get("providerData") or {}
                             if pd.get("conversationRequestId") == request_id:
-                                return sid
+                                if sid in branch_ids:
+                                    branch_hit = branch_hit or sid  # 暂存，继续找源
+                                else:
+                                    return sid  # 源会话命中即返
+                                break
                         except Exception:
                             continue
             except Exception:
                 continue
-        return None
+        return branch_hit  # 全部命中都是分支（用户可能确实想从分支再 fork）
 
     # ------------------------------------------------------------------
     # B. 消息判定

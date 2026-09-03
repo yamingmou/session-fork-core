@@ -105,10 +105,16 @@ def backup_source(path: str, backups_dir: str = DEFAULT_BACKUPS_DIR) -> str:
 
 
 def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) -> list[str]:
-    """验证分支文件完整性。返回错误列表（空 = 通过）。"""
+    """验证分支文件完整性。返回错误列表（空 = 通过）。
+
+    残留检查用结构化遍历（_find_residue，排除 rawContent/rawResponse 黑名单字段）
+    ——与替换引擎策略一致：黑名单字段保留旧 id 是合法设计，不误报。
+    """
     errs = []
     raw = open(dst_path, encoding="utf-8").read()
     check = [l for l in raw.splitlines() if l.strip()]
+    parsed: list[dict] = []
+    last_parse_failed = False
     if len(check) != cut:
         errs.append(f"line count {len(check)} != {cut}")
     for i, l in enumerate(check, 1):
@@ -116,15 +122,23 @@ def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) ->
             o = json.loads(l)
         except Exception as e:
             errs.append(f"parse error line {i}: {e}")
+            if i == len(check):
+                last_parse_failed = True
             continue
+        parsed.append(o)
         sid = o.get("sessionId") or o.get("session_id")
         if sid is not None and sid != new_id:
             errs.append(f"line {i} sessionId mismatch: {sid}")
-    if src_id in raw:
-        errs.append("old session id still present in raw content")
-    last = json.loads(check[-1])
-    if not (adapter.is_assistant_message(last) and adapter.get_text(last).strip()):
-        errs.append("last line has no assistant output_text")
+    # 旧 id 残留检查：排除黑名单字段（rawContent/rawResponse 合法保留）
+    raw_keys = getattr(adapter, "_RAW_KEYS", set())
+    residue = _find_residue(parsed, src_id, raw_keys)
+    if residue:
+        errs.append(f"old session id still present in {len(residue)} non-raw fields: {residue[:5]}")
+    # 末条完整性（末行坏行时跳过——parse error 已单独报，避免检查错行误报）
+    if parsed and not last_parse_failed:
+        last = parsed[-1]
+        if not (adapter.is_assistant_message(last) and adapter.get_text(last).strip()):
+            errs.append("last line has no assistant output_text")
     return errs
 
 
@@ -132,12 +146,14 @@ def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) ->
 # fork --verify / --doctor：真库体检（把"真库验证"从靠用户兜底变成内置强制检查）
 # ----------------------------------------------------------------------
 
-def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str]]:
-    """收集 adapter 存储下最新的真实会话 transcript（路径, session_id）。
+def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, bool, str]]:
+    """收集真实会话 transcript：分类为 源会话 / 分支，各自取最新 limit 个。
 
-    注意：可能包含已创建的分支文件——它们也是真实数据，同样值得验证。
+    返回 [(path, session_id, is_branch, parent_id_or_empty)]。
+    分支识别：查谱系索引（lineage forks / branches）——分支必须用其 parent_id（源 id）
+    做残留校验（分支正确时源 id 已被替换干净，若残留 = rewrite 回归）。
     """
-    found = []
+    found: list[tuple[str, str]] = []
     projects = getattr(adapter, "PROJECTS_DIR", None)
     if not projects or not os.path.isdir(projects):
         return found
@@ -149,7 +165,29 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str]]:
             if fn.endswith(".jsonl"):
                 found.append((os.path.join(p, fn), fn[:-6]))
     found.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
-    return found[:limit]
+
+    # 分支集合 + parent 映射（从旁路谱系索引；_lineage_get 返回 {fork_id: {...}}）
+    branch_parent: dict[str, str] = {}
+    try:
+        if hasattr(adapter, "_lineage_get"):
+            data = adapter._lineage_get()
+            branch_parent = {fid: f.get("parent_id", "") for fid, f in data.items() if f.get("parent_id")}
+        elif hasattr(adapter, "_read_index"):
+            data = adapter._read_index()
+            for f in data.get("branches", []):
+                if f.get("id"):
+                    branch_parent[f["id"]] = f.get("parent_id") or f.get("source_id") or ""
+    except Exception:
+        pass
+
+    sources = [f for f in found if f[1] not in branch_parent]
+    branches = [f for f in found if f[1] in branch_parent]
+    result = []
+    for path, sid in sources[:limit]:
+        result.append((path, sid, False, ""))
+    for path, sid in branches[:limit]:
+        result.append((path, sid, True, branch_parent.get(sid, "")))
+    return result
 
 
 def _find_residue(objs: list[dict], old_id: str, raw_keys: set) -> list[str]:
@@ -189,6 +227,9 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
     items.extend(adapter.verify_storage() or [])
 
     # 2. 真实数据替换验证（L2）
+    #    源会话：模拟 rewrite，验证引擎能把自身 id 清干净（黑名单除外）；
+    #    分支：直接查源 id（parent_id）是否残留——分支正确时源 id 已清零，
+    #          残留 = rewrite 回归或分支产物被污染（不能模拟 rewrite，会顺手修复变假绿）。
     real = _collect_real_transcripts(adapter)
     if not real:
         items.append(VerifyItem(
@@ -196,7 +237,10 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
             "无真实会话可用（仅 fixture 级）。请先用产品产生会话：WorkBuddy 直接对话 / Claude Code 在终端跑 claude 命令",
         ))
     else:
-        for path, sid in real:
+        raw_keys = getattr(adapter, "_RAW_KEYS", set())
+        n_src = sum(1 for r in real if not r[2])
+        n_br = len(real) - n_src
+        for path, sid, is_branch, parent_id in real:
             lines = _load_lines(path)
             if not lines:
                 items.append(VerifyItem(f"真实数据验证 {sid[:8]}", "L2", False, "transcript 为空或不可读"))
@@ -206,15 +250,27 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
             except SystemExit as e:
                 items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
                 continue
-            new_id = "verify-" + uuid.uuid4().hex[:12]
-            rewritten, n = adapter.rewrite_ids(copy.deepcopy(lines[:cut]), sid, new_id)
-            raw_keys = getattr(adapter, "_RAW_KEYS", set())
-            residue = _find_residue(rewritten, sid, raw_keys)
-            ok = not residue
-            detail = f"{n} 处替换，截断点 L{cut}/{total}"
-            if residue:
-                detail += f"，残留 {len(residue)} 处：{residue[:3]}"
-            items.append(VerifyItem(f"真实数据替换 {sid[:8]}", "L2", ok, detail))
+            if is_branch:
+                # 分支产物验证：源 id 必须零残留（黑名单除外）
+                residue = _find_residue(lines[:cut], parent_id, raw_keys)
+                ok = not residue
+                detail = f"源 id {parent_id[:8]} 零残留（分支产物正确）" if ok else \
+                         f"源 id 残留 {len(residue)} 处：{residue[:3]}（分支被污染/rewrite 回归）"
+                items.append(VerifyItem(f"分支产物校验 {sid[:8]}", "L2", ok, detail))
+            else:
+                # 源会话：模拟 rewrite，验证引擎替换能力
+                new_id = "verify-" + uuid.uuid4().hex[:12]
+                rewritten, n = adapter.rewrite_ids(copy.deepcopy(lines[:cut]), sid, new_id)
+                residue = _find_residue(rewritten, sid, raw_keys)
+                ok = not residue
+                detail = f"{n} 处替换，截断点 L{cut}/{total}"
+                if residue:
+                    detail += f"，残留 {len(residue)} 处：{residue[:3]}"
+                items.append(VerifyItem(f"真实数据替换 {sid[:8]}", "L2", ok, detail))
+        items.append(VerifyItem(
+            "体检覆盖", "L2", True,
+            f"抽查最新 {n_src} 个源会话 + {n_br} 个分支（源会话校验自身 id 替换干净，分支校验源 id 清零）",
+        ))
 
     # 3. 谱系索引
     try:
@@ -223,8 +279,8 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
             branches = data.get("branches", [])
             items.append(VerifyItem("谱系索引", "L2", True, f"可读（{len(branches)} 个分支记录）"))
         elif hasattr(adapter, "_lineage_get"):
-            data = adapter._lineage_get()
-            items.append(VerifyItem("谱系索引", "L2", True, f"可读（{len(data.get('forks', []))} 个分支记录）"))
+            data = adapter._lineage_get()  # {fork_id: {...}}
+            items.append(VerifyItem("谱系索引", "L2", True, f"可读（{len(data)} 个分支记录）"))
         else:
             items.append(VerifyItem("谱系索引", "L1", True, "adapter 无旁路索引（跳过）"))
     except Exception as e:

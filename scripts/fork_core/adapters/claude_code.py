@@ -27,9 +27,12 @@ BRANCH_INDEX = os.path.join(CLAUDE_DIR, "fork.branches.json")
 
 class ClaudeCodeAdapter(TranscriptionAdapter):
     name = "claude-code"
-    # 模块级常量的类属性镜像（engine 体检用 getattr(adapter, ...) 访问）
-    PROJECTS_DIR = PROJECTS_DIR
-    CLAUDE_DIR = CLAUDE_DIR
+
+    def __init__(self):
+        # 实例化时快照模块级路径（engine getattr 用实例属性，测试可隔离）
+        self.PROJECTS_DIR = PROJECTS_DIR
+        self.CLAUDE_DIR = CLAUDE_DIR
+        self.BRANCH_INDEX = BRANCH_INDEX
 
     # ------------------------------------------------------------------
     # A. 定位

@@ -3,7 +3,7 @@ name: session-fork
 slug: session-fork
 displayName: 会话分叉（打分支）
 description: 把当前（或指定）AI 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。基于 fork-core 通用引擎（Fork = Projection Derivative 投影派生），跨产品可用（WorkBuddy 适配器默认，Claude Code 等适配器验证中）。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 2.3.2
+version: 2.4.0
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, claude-code, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
@@ -46,10 +46,24 @@ fork_core/                    # 通用引擎（与产品无关）
 
 ## 触发条件
 
-用户**明确要求创建/执行**"打分支 / 会话分叉 / 复制对话 / 分支会话 / split session / fork session / 新建分支 / 从这里分叉"。两种模式：
+用户**明确要求创建/执行**"打分支 / 会话分叉 / 复制对话 / 分支会话 / split session / fork session / 新建分支 / 从这里分叉"。
 
-- **默认模式（推荐，无需额外信息）**：用户只说"打分支"或"打分支，命名『X』"——**截断点自动 = 上一轮对话的输出结束**（用户发起打分支之前，最后一条完整 assistant 回复的末尾）。这是本技能的默认行为，形成肌肉记忆，不用每次重新思考。
-- **指定模式**：用户给出拆分点特征文本（如"从『下一步你可以选』那条回复作为拆分点"）或行号——按指定点截断。
+**用户的唯一心智（技能只认这一条，无需用户理解内部概念）：**
+> **没贴 conversation ID → 打当前对话的分支；贴了 conversation ID（"复制请求 ID"的 JSON）→ 打那个对话的分支。**
+
+- **默认**：用户只说"打分支"或"打分支，命名『X』"（没贴任何 ID）——源会话 = 当前对话，截断点 = 上一轮对话输出结束。
+- **从某条回复打**：用户贴了复制的 ID（可能来自本对话或任何其他对话），或说了"从『XXX』那条回复打"——按用户给的信息定位源会话和断点。
+- **给 AI 的执行映射**（AI 判断用哪个命令，不把选择抛给用户）：
+
+| 用户给了什么 | AI 用什么命令 |
+|---|---|
+| 什么都没贴（当前对话） | `fork --session current`（默认截断点） |
+| @引用了一段内容（long-text quote）说打分支 | 从引用 JSON 提取 id（格式 `<sessionId>-<requestId>`，如 `"ec48e1ae-…-e683a22a…"`）→ `fork --session <sessionId> --request-id <requestId>` |
+| 贴完整 JSON（conversationId + conversationRequestId） | `fork --session <conversationId> --request-id <conversationRequestId>`（conversationId = 会话 ID，直接定位） |
+| 只贴了 conversationRequestId / traceId | `fork --request-id <id>`（自动反查该 ID 所属会话，跨工作区） |
+| 说了文本/行号 | `fork --session current --match "XXX"` 或 `--line N` |
+
+> **⚠️ 铁律（2026-09-03 实战事故固化）**：用户给了**任何形式的引用**（@long-text 引用 / 复制的请求 ID JSON / 纯 requestId / 指向别处的会话内容）→ **源会话 = 引用所指的那个会话，严禁默认 `--session current` 打当前对话**。识别引用 ID：JSON 里找 `conversationId`，或 @引用内容里找 `"id": "<sessionId>-<requestId>"` 双段拼接格式。拿不准时先 `--dry-run` 展示将要打源会话名 + 断点，问用户确认再正式执行——**绝不反复试错创建分支**。
 
 ### 排除（不触发执行，只回答问题）
 
@@ -65,12 +79,12 @@ fork_core/                    # 通用引擎（与产品无关）
 
 ### Step 1 — 确认源会话
 
-- 用户说"当前对话"→ 查数据库最新 `status='working'` 的会话（脚本 `--session current` 自动解析）；
-- 用户指定会话 → 直接使用该 id；
-- **用户只给了复制的"请求 ID"（可能来自其他会话/工作区）→ 用 `--request-id` 自动反查**：脚本全盘搜索该 conversationRequestId 属于哪个会话，自动定位源（v2.3.2 起，无需 --session）；
-- 跨会话打分支：**复制 JSON 里的 `conversationId` 就是源会话 ID**（= 会话文件名），可 `--session <conversationId> --request-id <conversationRequestId>` 显式指定。
-- 会话存储：`~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl`（slug = cwd 去 `/` 后 `/` 换 `-`，如 `Users-maxwell-WorkBuddy-2026-08-20-19-07-45`）。
-- 会话元数据在 `~/.workbuddy/workbuddy.db` 的 `sessions` 表（字段含 id/custom_title/status/created_at/cwd 等）。
+按上表映射，先看用户贴了什么：
+- 什么都没贴 → `--session current`（数据库最新 `status='working'` 的会话 = 当前对话）；
+- 贴了**完整 JSON**（UI 复制请求 ID 的原始格式）→ 取 `conversationId` 作为源会话（**conversationId 就是会话文件名**，直接定位，不扫描）；`conversationRequestId` 作为断点；
+- 贴了**纯 requestId/traceId**（无 conversationId）→ 用 `--request-id` 自动反查该 ID 属于哪个会话（跨工作区兜底，9b054ee 起按 mtime 新→旧搜，提速 16x）。
+- 会话存储：`~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl`（slug = cwd 去 `/` 后 `/` 换 `-`）。
+- 会话元数据在 `~/.workbuddy/workbuddy.db` 的 `sessions` 表。
 
 ### Step 2 — 确认截断点（默认规则优先，勿跳过）
 
@@ -112,44 +126,27 @@ fork_core/                    # 通用引擎（与产品无关）
 3. **git clone 任意目录**：`python3 <任意目录>/scripts/create_branch.py`（脚本自动定位自身，不依赖 cwd）。
 
 ```bash
-# ① pip 版（跨平台统一，推荐）
-fork --session current [--adapter workbuddy]
+# 场景 1：当前对话打分支（用户没贴任何 ID）
+fork --session current --name "<分支名>"                 # 默认截断到上一轮输出结束
+fork --session current --match "<拆分点特征文本>"          # 从当前对话某条回复打
 
-# ② WorkBuddy 技能目录版（与 ① 等价）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py \
-  --session current
-
-# 默认模式 + 自定义名称
-fork --session current --name "<分支名>"
-
-# 最精确：按请求ID截断——自动反查源会话（v2.3.2 起，无需指定 --session）
-# 从任何对话复制"请求 ID"，粘贴 conversationRequestId 即可，脚本自动定位该 ID 所属会话
+# 场景 2：从贴的 conversation ID 打（用户贴了"复制请求 ID"，可能来自任何对话/工作区）
+fork --session "<conversationId>" --request-id "<conversationRequestId>" --name "<分支名>"
+#   ↑ conversationId 即 UI 复制 JSON 里的 conversationId（= 源会话 ID），直接定位
+# 只拿到 requestId/traceId 时：自动反查所属会话（无需 --session）
 fork --request-id "<conversationRequestId>" --name "<分支名>"
 
-# 显式指定源会话 + 请求ID（跨工作区/多个候选时更明确；conversationId 即源会话 ID）
-fork --session "<conversationId>" --request-id "<conversationRequestId>" --name "<分支名>"
-
-# 指定模式：按特征文本截断
-fork --session current --match "<拆分点特征文本>" --name "<分支名>"
-
-# 查询当前工作区的所有分支
-fork --list
-
-# 修复一个被主进程追加了多余消息的分支（仅 workbuddy）
-fork --fix <分支会话ID>
-
-# 真库体检（发布/打分支前必跑）：存储/schema/真实数据替换/谱系 全项检查
-fork --verify            # 别名 --doctor；任何一项 FAIL 则 exit 1 拦截
-
-# 其他产品（验证中，不宣传）：
-fork --session current --adapter claude-code --name "<分支名>"
+# 运维类
+fork --list                                        # 查询分支
+fork --fix <分支会话ID>                              # 修复被追加消息的分支（仅 workbuddy）
+fork --verify                                      # 真库体检（发布前必跑），别名 --doctor
+fork --session current --adapter claude-code       # 其他产品（验证中，不宣传）
 ```
 
-**⚠️ 真库验证是必须项（v2.3.2 起）**：`fork --verify` 做 L2 真库体检——数据库/schema NOT NULL 约束、真实会话数据上递归 id 替换零残留、谱系索引。**发布前必跑；打分支前建议跑**。Claude adapter 无真实 CLI 会话时体检 FAIL（L1），属预期——产生会话后再验。
-
-脚本自动完成：备份（仅源 jsonl 到 `~/.workbuddy/backups/<时间戳>/`）→ 定位截断点 → 截取 1..截断点 → 顶层 `sessionId` 改为新 UUID → **递归 id 替换**（覆盖 output/arguments/renderer/error 等全部可读字段，rawContent/rawResponse 等原始内容黑名单不碰）→ sessions 表插入新行（复制源行，改 id/custom_title/status=terminated/时间戳）→ 验证 → **文件权限保持 0644**（不自动锁只读，用户可按需手动锁定）。
-
-先跑 `--dry-run` 确认截断点定位正确，再正式执行（推荐）。
+**执行规范**：
+- **先 `--dry-run` 确认截断点，再正式执行**（推荐，防打错位置）；
+- **`fork --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
+- 脚本自动完成备份 → 截取 → 会话 id 替换 → 注册 → 校验，无需手工介入。
 
 ### Step 4 — 验证与汇报
 
@@ -198,7 +195,7 @@ fork --session current --adapter claude-code --name "<分支名>"
 
 1. **用户说了断点 → 必须用 --match/--line，绝对不能用默认模式**：默认模式找的是"最后一条 assistant 回复"（文件末尾），不是用户指定的中间位置。曾因用默认模式执行"截断到 XXX 产生处"的指令，导致分支包含了不该有的后续对话（多出 13-22 行），需要事后用 --fix 修复。
 2. **默认截断点 = 上一轮对话输出结束**：用户只说"打分支"没指定断点时，默认截到用户最后一条消息之前最后一条完整 assistant 回复的末尾（脚本默认模式自动定位，dry-run 验证即可）。
-3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `arguments` / `argumentsDisplayText` / `toolResult.renderer.value` / `error.message` 等字段都会出现旧 id。v2.3.2 起使用**递归 id 替换**（覆盖全部可读字段，仅 rawContent/rawResponse 等原始内容黑名单不碰），WorkBuddy 与 Claude 两个 adapter 机制一致。实测一次打分支替换 2557 处。
+3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `arguments` / `argumentsDisplayText` / `toolResult.renderer.value` / `error.message` 等字段都会出现旧 id。v2.4.0 起使用**递归 id 替换**（覆盖全部可读字段，仅 rawContent/rawResponse 等原始内容黑名单不碰），WorkBuddy 与 Claude 两个 adapter 机制一致。实测一次打分支替换 2557 处。
 4. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
 5. **WorkBuddy 会追加消息到分支文件**：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户手动 `chmod 444`），已有分支可用 --fix 修复。
 6. **快照分支特性**：复制发生在读取时刻，原会话之后的新消息不会进分支——这是正常行为，不是丢数据。
