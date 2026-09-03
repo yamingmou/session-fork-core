@@ -12,7 +12,7 @@ import time
 
 from . import available, create_fork, get_adapter, list_forks
 
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 
 
 def print_tree(metas) -> None:
@@ -123,7 +123,7 @@ def main(argv=None) -> None:
     print(f"NEW SESSION ID: {r.new_id}")
     print(f"custom_title: {r.name}  | status: terminated")
     print(f"⚠️  注意：分支文件未锁定只读。如需防止主进程追加消息，请手动执行：chmod 444 {r.dst_path}")
-    print(f"ACTION   : ⚠️ 请重启对应产品以在会话列表中看到新分支")
+    print(f"ACTION   : 分支已创建——会话列表通常自动刷新即可看到；若未出现，重启对应产品")
 
 
 def run_verify(adapter) -> None:

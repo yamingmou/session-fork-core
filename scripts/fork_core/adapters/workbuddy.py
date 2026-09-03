@@ -59,12 +59,21 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         return row[0]
 
     def find_transcript(self, session_id: str) -> tuple[os.PathLike | None, str | None]:
+        # 安全校验（2026-09-03 二轮审计）：拒绝路径穿越——session id 只允许文件名字符，
+        # 且解析后的路径必须落在 PROJECTS_DIR 内
+        if not session_id or "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            return None, None
         if not os.path.isdir(PROJECTS_DIR):
             return None, None
         for slug in os.listdir(PROJECTS_DIR):
             cand = os.path.join(PROJECTS_DIR, slug, session_id + ".jsonl")
             if os.path.exists(cand):
-                return cand, slug
+                # 兜底：realpath 必须仍以 PROJECTS_DIR 为前缀（防符号链接/其他绕过）
+                try:
+                    if os.path.realpath(cand).startswith(os.path.realpath(PROJECTS_DIR) + os.sep):
+                        return cand, slug
+                except Exception:
+                    continue
         return None, None
 
     def find_session_by_request_id(self, request_id: str) -> str | None:
@@ -277,22 +286,40 @@ class WorkBuddyAdapter(TranscriptionAdapter):
 
     def _lineage_write(self, data: dict) -> None:
         os.makedirs(os.path.dirname(LINEAGE_PATH), exist_ok=True)
-        with open(LINEAGE_PATH, "w", encoding="utf-8") as f:
+        # 原子写（2026-09-03 审计）：先写临时文件再 os.replace，避免并发/中断留半文件
+        tmp = LINEAGE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, LINEAGE_PATH)
 
     def _lineage_add(self, new_id: str, name: str, parent_id: str, at_seq: int, cwd: str) -> None:
-        data = self._lineage_read()
-        data["forks"].append(
-            {
-                "id": new_id,
-                "name": name,
-                "parent_id": parent_id,
-                "at_seq": at_seq,
-                "cwd": cwd,
-                "created_at": int(datetime.datetime.now().timestamp() * 1000),
-            }
-        )
-        self._lineage_write(data)
+        lock = None
+        try:
+            import fcntl
+            os.makedirs(os.path.dirname(LINEAGE_PATH), exist_ok=True)
+            lock = open(LINEAGE_PATH + ".lock", "a")
+            fcntl.flock(lock, fcntl.LOCK_EX)  # 跨进程互斥（多会话并行 fork 不丢记录）
+        except Exception:
+            pass  # 无 fcntl 平台（Windows）：退化为原子写
+        try:
+            data = self._lineage_read()
+            data["forks"].append(
+                {
+                    "id": new_id,
+                    "name": name,
+                    "parent_id": parent_id,
+                    "at_seq": at_seq,
+                    "cwd": cwd,
+                    "created_at": int(datetime.datetime.now().timestamp() * 1000),
+                }
+            )
+            self._lineage_write(data)
+        finally:
+            if lock is not None:
+                try:
+                    lock.close()
+                except Exception:
+                    pass
 
     def _lineage_get(self) -> dict:
         """返回 {fork_id: {parent_id, at_seq, name, cwd, created_at}}。"""

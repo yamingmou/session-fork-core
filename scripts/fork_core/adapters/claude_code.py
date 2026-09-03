@@ -59,12 +59,19 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         return newest
 
     def find_transcript(self, session_id: str) -> tuple[str | None, str | None]:
+        # 安全校验（2026-09-03）：拒绝路径穿越 + containment 兜底
+        if not session_id or "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+            return None, None
         if not os.path.isdir(PROJECTS_DIR):
             return None, None
         for slug in os.listdir(PROJECTS_DIR):
             cand = os.path.join(PROJECTS_DIR, slug, session_id + ".jsonl")
             if os.path.exists(cand):
-                return cand, slug
+                try:
+                    if os.path.realpath(cand).startswith(os.path.realpath(PROJECTS_DIR) + os.sep):
+                        return cand, slug
+                except Exception:
+                    continue
         return None, None
 
     # ------------------------------------------------------------------

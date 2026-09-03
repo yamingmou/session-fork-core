@@ -267,9 +267,13 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 if residue:
                     detail += f"，残留 {len(residue)} 处：{residue[:3]}"
                 items.append(VerifyItem(f"真实数据替换 {sid[:8]}", "L2", ok, detail))
+        # 汇总项 ok = 本轮所有真实数据检查项都通过（不硬编码绿，2026-09-03 审计）
+        data_items = [it for it in items if it.name.startswith(("真实数据替换", "分支产物校验", "截断定位"))]
+        all_ok = bool(data_items) and all(it.ok for it in data_items)
         items.append(VerifyItem(
-            "体检覆盖", "L2", True,
-            f"抽查最新 {n_src} 个源会话 + {n_br} 个分支（源会话校验自身 id 替换干净，分支校验源 id 清零）",
+            "体检覆盖", "L2", all_ok,
+            f"抽查最新 {n_src} 个源会话 + {n_br} 个分支"
+            + ("（全部通过）" if all_ok else f"（{sum(1 for it in data_items if not it.ok)} 项失败——见上）"),
         ))
 
     # 3. 谱系索引
@@ -326,13 +330,8 @@ def create_fork(
         raise SystemExit(f"Transcript is empty or unreadable: {transcript}")
 
     if match_text or line_no or request_id:
+        # locate_split_point 找不到时自行 SystemExit（带 Hint），此处不会返回 None
         cut, total = locate_split_point(adapter, lines, match_text, line_no, request_id)
-        if cut is None:
-            raise SystemExit(
-                f"request_id {request_id!r} not found in session {src_id}\n"
-                "  - 若该请求 ID 复制自其他会话/产品：请显式指定 --session <conversationId>\n"
-                "    （UI 复制的 JSON 里 conversationId 即源会话 ID）"
-            )
         how = (
             f"match={match_text!r}" if match_text
             else (f"line={line_no}" if line_no else f"request_id={request_id!r}")
