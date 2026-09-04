@@ -7,6 +7,7 @@ WorkBuddy / Claude Code / Codex 的差异全部被 adapter 吸收。
 import copy
 import json
 import os
+import stat
 import shutil
 import time
 import uuid
@@ -16,6 +17,51 @@ from .models import ForkResult, SessionMeta, VerifyItem
 
 # 备份目录默认 ~/.workbuddy/backups（可通过环境变量覆盖）
 DEFAULT_BACKUPS_DIR = os.path.join(os.path.expanduser("~"), ".workbuddy", "backups")
+
+
+class ForkError(Exception):
+    """fork-core 异常基类（库层不抛 SystemExit——那是 CLI 的事）。调用方 except ForkError 兜住全部。"""
+    exit_code = 1
+
+
+class ForkVerifyError(ForkError):
+    """自检未通过。此时尚未产生任何外部可见副作用（verify 先于落位/登记）。"""
+    exit_code = 2
+
+    def __init__(self, errs):
+        self.errs = list(errs)
+        super().__init__("VERIFY FAILED:\n  - " + "\n  - ".join(self.errs))
+
+
+class ForkRegisterError(ForkError):
+    """文件已落位但登记失败。失败态经回滚处理后应为孤儿文件（无害，可安全重跑）。"""
+    exit_code = 3
+
+
+class ForkRollbackError(ForkError):
+    """回滚失败——最严重：磁盘可能残留需人工处理。必须在信息里给出具体路径，绝不静默。"""
+    exit_code = 4
+
+
+def _safe_remove(path: str) -> bool:
+    """尽力删除，返回结果而非吞异常。失败由调用方决定后果（tmp 无所谓 / dst 必须报警）。
+
+    Windows 只读文件删除兜底：先 chmod 解只读再删（v1.2.0 曾把分支锁只读）。
+    """
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return True
+    except PermissionError:
+        try:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+    except OSError:
+        return False
 
 
 def _load_lines(path: str) -> list[dict]:
@@ -45,7 +91,7 @@ def locate_last_reply(adapter, lines: list[dict]) -> tuple[int, int]:
         o = lines[i - 1]
         if adapter.is_assistant_message(o) and adapter.get_text(o).strip():
             return i, n
-    raise SystemExit("No completed assistant reply found in transcript")
+    raise ForkError("No completed assistant reply found in transcript")
 
 
 def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None, request_id=None) -> tuple[int, int]:
@@ -61,7 +107,7 @@ def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None
             if adapter.is_assistant_message(o) and adapter.get_request_id(o) == request_id:
                 cand = i  # keep last match
         if cand is None:
-            raise SystemExit(
+            raise ForkError(
                 f"request_id not found in any assistant reply: {request_id!r}\n"
                 "  Hint: 该请求 ID 可能属于其他会话/工作区——复制 JSON 里 conversationId 即源会话 ID，"
                 "用 --session <conversationId> 指定（或用 --request-id 自动反查源会话）"
@@ -69,7 +115,7 @@ def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None
     elif line_no is not None:
         cand = line_no
         if not (1 <= cand <= n):
-            raise SystemExit(f"--line {cand} out of range (file has {n} lines)")
+            raise ForkError(f"--line {cand} out of range (file has {n} lines)")
     else:
         cand = None
         for i, o in enumerate(lines, 1):
@@ -78,18 +124,18 @@ def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None
             if match_text in adapter.get_text(o):
                 cand = i  # keep last match
         if cand is None:
-            raise SystemExit(f"match text not found in any assistant reply: {match_text!r}")
+            raise ForkError(f"match text not found in any assistant reply: {match_text!r}")
 
     # 边界校验：截断行是 assistant 且完整收尾（下一行是 user 或 EOF）
     o = lines[cand - 1]
     if not adapter.is_assistant_message(o):
-        raise SystemExit(f"Split line {cand} is not an assistant message")
+        raise ForkError(f"Split line {cand} is not an assistant message")
     if cand < n:
         nxt = lines[cand]
         if not (adapter.is_user_message(nxt) or nxt.get("type") in ("user", "message")):
             # 下一行既不是 user 消息也不是纯事件行 → 可能落在未完成回复中间
             if adapter.is_assistant_message(nxt):
-                raise SystemExit(
+                raise ForkError(
                     f"Line {cand} is not a complete reply boundary (line {cand+1} is assistant)"
                 )
     return cand, n
@@ -247,7 +293,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 continue
             try:
                 cut, total = locate_last_reply(adapter, lines)
-            except SystemExit as e:
+            except ForkError as e:
                 items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
                 continue
             if is_branch:
@@ -305,7 +351,8 @@ def create_fork(
 ) -> ForkResult:
     """核心入口：创建分支。
 
-    流程：resolve → find → locate → backup → truncate+rewrite → write → register → verify
+    流程：resolve → find → locate → backup → truncate+rewrite → write → verify → register
+    （verify 先于 register——验证失败不留任何 db/lineage 痕迹；2026-09-04 学习 Marvis）
     """
     # request-id 模式：用户复制 UI "请求 ID" 打分支，可能不知道源会话（跨 workspace）。
     # 若 --session 是 current（未显式指定源），先全盘反查该 request-id 属于哪个会话，
@@ -318,7 +365,7 @@ def create_fork(
     src_id = adapter.resolve_session(session_ref)
     transcript, slug = adapter.find_transcript(src_id)
     if not transcript:
-        raise SystemExit(f"Transcript not found for {src_id}")
+        raise ForkError(f"Transcript not found for {src_id}")
 
     src_meta = adapter.load_session_meta(src_id)
     if src_meta is None:
@@ -327,10 +374,10 @@ def create_fork(
 
     lines = _load_lines(transcript)
     if not lines:
-        raise SystemExit(f"Transcript is empty or unreadable: {transcript}")
+        raise ForkError(f"Transcript is empty or unreadable: {transcript}")
 
     if match_text or line_no or request_id:
-        # locate_split_point 找不到时自行 SystemExit（带 Hint），此处不会返回 None
+        # locate_split_point 找不到时自行 ForkError（带 Hint），此处不会返回 None
         cut, total = locate_split_point(adapter, lines, match_text, line_no, request_id)
         how = (
             f"match={match_text!r}" if match_text
@@ -346,48 +393,72 @@ def create_fork(
         name = f"分支·{hint}" if hint else "分支"
 
     backup_dir = None
-    if not dry_run:
-        backup_dir = backup_source(transcript, backups_dir)
-
     truncated = lines[:cut]
     truncated, replacements = adapter.rewrite_ids(truncated, src_id, new_id)
-
     dst = os.path.join(os.path.dirname(transcript), new_id + ".jsonl")
-    if not dry_run:
-        adapter.write_branch(dst, truncated)
-        # 先验证后注册（2026-09-04 学习 Marvis 事务内自检：自检不过不留半成品）。
-        # 原顺序 verify 在 register 之后——VERIFY FAILED 时脏分支已写文件+落 db+记 lineage，
-        # 侧边栏出现错误分支（真实事故来源）。现改为：文件写完立即 verify，失败删文件
-        # 直接 raise——无 db/lineage 痕迹；只有内容验证通过才注册。
-        errs = verify_branch(adapter, dst, new_id, cut, src_id)
+    # L0 原子写（2026-09-04 事务化改造）：先写 .tmp（不被侧边栏扫、不在 db → 零外部可见副作用），
+    # verify 校验 tmp 的磁盘字节；通过才 os.replace 落位（原子，无中间态）。
+    # 自检失败/中途异常 = 只留 tmp 垃圾文件（无害）——回滚不依赖删除（L0 优于 L1）。
+    tmp = f"{dst}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
+    try:
+        if not dry_run:
+            backup_dir = backup_source(transcript, backups_dir)
+        adapter.write_branch(tmp, truncated)
+        try:
+            errs = verify_branch(adapter, tmp, new_id, cut, src_id)
+        except Exception as e:
+            # verify 自身异常：tmp 删不掉也无害（不在 db/侧边栏）
+            _safe_remove(tmp)
+            raise ForkError(f"VERIFY 执行异常：{e}") from e
+
+        if dry_run:
+            # dry-run 走完整校验路径（洞 5：dry-run 的 ok 要有真实信息量），只是不落位/不登记
+            if errs:
+                _safe_remove(tmp)
+                raise ForkVerifyError(errs)
+            _safe_remove(tmp)
+            return ForkResult(
+                ok=True, src_id=src_id, new_id=new_id, name=name, cut=cut, total=total,
+                how=how, transcript_path=transcript, dst_path=dst, backup_dir=None,
+                replacements=replacements, dry_run=True, verified=True,
+            )
+
         if errs:
-            try:
-                os.remove(dst)
-            except OSError:
-                pass
-            raise SystemExit("VERIFY FAILED:\n  - " + "\n  - ".join(errs))
+            # 尚未产生任何外部可见状态——只需不开始，不需撤销
+            _safe_remove(tmp)  # 删不掉也无所谓：.tmp 不被扫
+            raise ForkVerifyError(errs)
+
+        # ── 文件落位（第一个"发布"动作；失败态优先对准孤儿文件侧）──
+        os.replace(tmp, dst)
+        # 读锁不再自动加（v1.4.0 起提示用户手动 chmod 444），此处只负责落位
+
+        # ── 登记（db + lineage；内部顺序见 adapter，外层只做补救）──
         try:
             adapter.register_branch(src_meta, new_id, dst, name, parent_id=src_meta.id, at_seq=cut)
-        except Exception:
-            # 注册失败（db/lineage 异常）：删已写文件，不留"验证通过但未登记"的孤儿
+        except Exception as e:
+            # register 失败（其内部已尽量同序，db/lineage 侧用 unregister 兜底清理）；
+            # 文件已落位——回滚文件让失败态退回孤儿文件（无害）；删不掉必须显式报错
+            unreg_err = ""
             try:
-                os.remove(dst)
-            except OSError:
-                pass
-            raise
+                unreg = getattr(adapter, "unregister_branch", None)
+                if callable(unreg):
+                    unreg(new_id)
+            except Exception as re:
+                unreg_err = f"\n  注册痕迹清理失败（db/lineage 可能残留 {new_id[:8]}，请人工清理）：{re}"
+            if _safe_remove(dst):
+                raise ForkRegisterError(f"登记失败，分支文件已回滚：{dst}{unreg_err}") from e
+            raise ForkRollbackError(
+                f"登记失败，且分支文件无法删除——需人工清理：\n  {dst}\n"
+                f"  该文件未完整登记，可能残留 db/谱系痕迹{unreg_err}"
+            ) from e
+    finally:
+        # 兜底清理 tmp（replace 成功后 tmp 已不存在）
+        _safe_remove(tmp)
 
     return ForkResult(
-        ok=True,
-        src_id=src_id,
-        new_id=new_id,
-        name=name,
-        cut=cut,
-        total=total,
-        how=how,
-        transcript_path=transcript,
-        dst_path=dst,
-        backup_dir=backup_dir,
-        replacements=replacements,
+        ok=True, src_id=src_id, new_id=new_id, name=name, cut=cut, total=total,
+        how=how, transcript_path=transcript, dst_path=dst, backup_dir=backup_dir,
+        replacements=replacements, verified=True,
     )
 
 

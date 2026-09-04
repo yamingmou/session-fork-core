@@ -104,6 +104,14 @@ class TranscriptionAdapter:
         """
         raise NotImplementedError
 
+    def unregister_branch(self, new_id: str) -> None:
+        """撤销 register_branch 的副作用（db 行 + 谱系条目）。
+
+        引擎层 register 失败时回滚用（2026-09-04 评审：回滚应撤销注册副作用，
+        而不是删已验证的产物文件）。adapter 如无副作用/无法撤销则 no-op。
+        """
+        return None
+
     def list_branches(self, cwd: Optional[str] = None) -> list[SessionMeta]:
         """列出当前 workspace 的分支（含状态/时间）。"""
         raise NotImplementedError

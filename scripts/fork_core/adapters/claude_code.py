@@ -195,6 +195,17 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         )
         self._write_index(data)
 
+    def unregister_branch(self, new_id: str) -> None:
+        """撤销 register_branch：从 BRANCH_INDEX 移除条目（引擎回滚用）。"""
+        try:
+            data = self._read_index()
+            branches = [b for b in data.get("branches", []) if b.get("id") != new_id]
+            if len(branches) != len(data.get("branches", [])):
+                data["branches"] = branches
+                self._write_index(data)
+        except Exception:
+            pass
+
     def list_branches(self, cwd: str | None = None) -> list[SessionMeta]:
         data = self._read_index()
         branches = []

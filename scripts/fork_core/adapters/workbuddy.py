@@ -243,6 +243,11 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         )
 
     def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None) -> None:
+        # 顺序调整（2026-09-04 事务化改造，原则：失败态落在无害侧）：
+        # 先写旁路谱系、后写 db——db 失败时 db 无副作用（无悬空行），
+        # lineage 孤儿条目由调用方 unregister 兜底清除；若 db 先写、lineage 后写，
+        # lineage 失败会留下"db 行指向已回滚文件"的悬空记录（侧边栏崩）。
+        self._lineage_add(new_id, name, parent_id or src.id, at_seq, src.cwd or "")
         db = self._connect()
         try:
             cur = db.cursor()
@@ -270,8 +275,26 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             db.commit()
         finally:
             db.close()
-        # 旁路谱系索引（不污染官方 sessions 表）
-        self._lineage_add(new_id, name, parent_id or src.id, at_seq, src.cwd or "")
+
+    def unregister_branch(self, new_id: str) -> None:
+        """撤销 register_branch：删 db 行 + 移谱系条目（注册中途失败时引擎回滚用）。"""
+        try:
+            db = self._connect()
+            try:
+                db.execute("DELETE FROM sessions WHERE id=?", (new_id,))
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass
+        try:
+            data = self._lineage_read()
+            forks = [f for f in data.get("forks", []) if f.get("id") != new_id]
+            if len(forks) != len(data.get("forks", [])):
+                data["forks"] = forks
+                self._lineage_write(data)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # 旁路谱系索引（fork.lineage.json）

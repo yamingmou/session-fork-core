@@ -11,8 +11,9 @@ import sys
 import time
 
 from . import available, create_fork, get_adapter, list_forks
+from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.2"
+VERSION = "2.4.3"
 
 
 def print_tree(metas) -> None:
@@ -48,7 +49,7 @@ def print_tree(metas) -> None:
         render(r, "", i == len(roots) - 1)
 
 
-def main(argv=None) -> None:
+def _main(argv=None) -> None:
     ap = argparse.ArgumentParser(
         prog="fork",
         description="Cross-product session forking (Fork = Projection Derivative).",
@@ -113,7 +114,9 @@ def main(argv=None) -> None:
     print(f"Split    : line {r.cut} / {r.total}  ({r.how})")
     print(f"Branch   : {r.new_id}  name={r.name!r}")
     if args.dry_run:
-        print("DRY RUN — nothing written. (Would back up source jsonl only)")
+        # v2.4.3：dry-run 走完整校验路径（写 tmp + verify），verified=True 才有真实信息量
+        print(f"Verify   : {'✅ OK' if r.verified else 'NOT RUN'} (dry-run 已校验磁盘字节)")
+        print("DRY RUN — nothing written. (Would create + register a real branch)")
         return
     if r.backup_dir:
         print(f"Backup   : {r.backup_dir} (source jsonl only, no database copy)")
@@ -123,7 +126,8 @@ def main(argv=None) -> None:
     print(f"NEW SESSION ID: {r.new_id}")
     print(f"custom_title: {r.name}  | status: terminated")
     print(f"⚠️  注意：分支文件未锁定只读。如需防止主进程追加消息，请手动执行：chmod 444 {r.dst_path}")
-    print(f"ACTION   : 分支已创建——会话列表通常自动刷新即可看到；若未出现，重启对应产品")
+    print(f"ACTION   : 分支已创建——会话列表非实时刷新，需重启对应产品才能在左侧看到")
+    print(f"            macOS: ⌘Q 退出重开，或终端执行 open -a WorkBuddy")
 
 
 def run_verify(adapter) -> None:
@@ -175,6 +179,29 @@ def run_fix(fix_session_id: str) -> None:
     check = _load_lines(fix_path)
     print(f"Verify   : {len(check)} lines (was {total}, removed {total - len(check)})")
     print(f"⚠️  分支文件未锁定只读。如需防止追加消息，请手动执行：chmod 444 {fix_path}")
+
+
+def main(argv=None) -> None:
+    """CLI 入口：引擎层 ForkError 分层 → 打印错误并退出（引擎不抛 SystemExit，转换在 CLI 层）。
+
+    exit code 语义：1=ForkError 通用 / 2=自检失败（零副作用，可重试）/
+    3=登记失败（文件已回滚，可安全重试）/ 4=回滚失败（需人工清理）。
+    """
+    try:
+        _main(argv)
+    except ForkRollbackError as e:
+        print(f"!!! 需人工清理 !!!\n{e}", file=sys.stderr)
+        raise SystemExit(e.exit_code)
+    except ForkRegisterError as e:
+        print(f"REGISTER FAILED: {e}", file=sys.stderr)
+        print("登记失败——文件已回滚（或已提示路径），可安全重试。", file=sys.stderr)
+        raise SystemExit(e.exit_code)
+    except ForkVerifyError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        raise SystemExit(e.exit_code)
+    except ForkError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        raise SystemExit(e.exit_code)
 
 
 if __name__ == "__main__":

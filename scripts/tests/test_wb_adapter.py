@@ -224,7 +224,7 @@ _atom_a = _WBA()
 _try_fail = False
 try:
     _cf(_atom_a, _src, name="T", dry_run=False)
-except SystemExit:
+except _eng.ForkError:
     _try_fail = True
 _eng.verify_branch = _orig_vb
 assert _try_fail, "verify 失败应 raise"
@@ -236,5 +236,180 @@ _lin = json.load(open(wb_mod2.LINEAGE_PATH)) if os.path.exists(wb_mod2.LINEAGE_P
 assert _n == 1 and len(_files) == 1 and not _lin.get("forks"), "verify 失败应不留痕迹"
 shutil.rmtree(_atom_tmp)
 print("✓ 原子性: verify 失败不留半成品（db/文件/lineage 全干净）")
+# ============================================================
+# 14. register 失败回滚方向（撤 db 副作用，保留合格文件）v2.4.3
+# ============================================================
+import fork_core.adapters.workbuddy as _wb4
+_rb_tmp = _tf.mkdtemp(prefix="wb-roll-")
+_wb4.DB_PATH = os.path.join(_rb_tmp, "workbuddy.db")
+_wb4.PROJECTS_DIR = os.path.join(_rb_tmp, "projects")
+_wb4.LINEAGE_PATH = os.path.join(_rb_tmp, "fork.lineage.json")
+os.makedirs(os.path.join(_wb4.PROJECTS_DIR, "Users-x-test"))
+_rc = sqlite3.connect(_wb4.DB_PATH)
+_rc.execute("""CREATE TABLE sessions (id TEXT, cwd TEXT NOT NULL, user_id TEXT NOT NULL,
+    title TEXT, custom_title TEXT, status TEXT NOT NULL DEFAULT 'Pending',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER,
+    is_playground INTEGER NOT NULL DEFAULT 0, last_activity_at INTEGER)""")
+_rc.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,is_playground) VALUES (?,?,?,?,?,?,?)",
+            ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
+_rc.commit(); _rc.close()
+_rsrc = "SRC-1111-2222-3333-4444"
+with open(os.path.join(_wb4.PROJECTS_DIR, "Users-x-test", _rsrc+".jsonl"), "w") as f:
+    for l in [
+        {"type":"message","role":"user","sessionId":_rsrc,"content":[{"type":"input_text","text":"hi"}]},
+        {"type":"message","role":"assistant","sessionId":_rsrc,"content":[{"type":"output_text","text":"ok"}]},
+        {"type":"message","role":"user","sessionId":_rsrc,"content":[{"type":"input_text","text":"打分支"}]},
+    ]: f.write(json.dumps(l)+"\n")
+from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA3
+_orig_reg2 = _WBA3.register_branch
+def _fake_reg2(self, src, new_id, dst_path, name, parent_id=None, at_seq=None):
+    db = self._connect()
+    db.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,is_playground) VALUES (?,?,?,?,?,?,?)",
+               (new_id,"/tmp","u","terminated",1,1,0))
+    db.commit(); db.close()
+    raise RuntimeError("simulated lineage failure")
+_WBA3.register_branch = _fake_reg2
+_rfailed = False
+try:
+    _cf(_WBA3(), _rsrc, name="T", dry_run=False)
+except _eng.ForkError:
+    _rfailed = True
+_WBA3.register_branch = _orig_reg2
+assert _rfailed, "register 失败应抛 ForkError"
+_rc2 = sqlite3.connect(_wb4.DB_PATH)
+_rrows = _rc2.execute("SELECT id FROM sessions").fetchall()
+_rc2.close()
+_rfiles = os.listdir(os.path.join(_wb4.PROJECTS_DIR, "Users-x-test"))
+assert len(_rrows) == 1, "unregister 应清掉 db 残留行"
+assert len(_rfiles) == 1, "L0: register 失败应回滚文件（干净回退，无孤儿无悬空）"
+shutil.rmtree(_rb_tmp)
+print("✓ 回滚方向: register 失败撤 db/谱系 + 回滚文件（干净回退，可安全重跑）")
+
+# ============================================================
+# 15. L0 事务化（焊死顺序 + dry-run 校验 + rollback 显式报错）v2.4.3
+# ============================================================
+import fork_core.adapters.workbuddy as _wb5
+_l0_tmp = _tf.mkdtemp(prefix="wb-l0-")
+_wb5.DB_PATH = os.path.join(_l0_tmp, "workbuddy.db")
+_wb5.PROJECTS_DIR = os.path.join(_l0_tmp, "projects")
+_wb5.LINEAGE_PATH = os.path.join(_l0_tmp, "fork.lineage.json")
+os.makedirs(os.path.join(_wb5.PROJECTS_DIR, "Users-x-test"))
+_lc = sqlite3.connect(_wb5.DB_PATH)
+_lc.execute("""CREATE TABLE sessions (id TEXT, cwd TEXT NOT NULL, user_id TEXT NOT NULL,
+    title TEXT, custom_title TEXT, status TEXT NOT NULL DEFAULT 'Pending',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER,
+    is_playground INTEGER NOT NULL DEFAULT 0, last_activity_at INTEGER)""")
+_lc.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,is_playground) VALUES (?,?,?,?,?,?,?)",
+            ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
+_lc.commit(); _lc.close()
+_lsrc = "SRC-1111-2222-3333-4444"
+with open(os.path.join(_wb5.PROJECTS_DIR, "Users-x-test", _lsrc+".jsonl"), "w") as f:
+    for l in [
+        {"type":"message","role":"user","sessionId":_lsrc,"content":[{"type":"input_text","text":"hi"}]},
+        {"type":"message","role":"assistant","sessionId":_lsrc,"content":[{"type":"output_text","text":"ok"}]},
+        {"type":"message","role":"user","sessionId":_lsrc,"content":[{"type":"input_text","text":"打分支"}]},
+    ]: f.write(json.dumps(l)+"\n")
+from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA4
+from fork_core.engine import ForkVerifyError as _FVE, ForkRollbackError as _FRE
+
+# 15a. 焊死顺序：verify 失败时 register 零调用
+_reg_calls = []
+_oreg = _WBA4.register_branch
+_WBA4.register_branch = lambda *a, **k: _reg_calls.append(1) or _oreg(*a, **k)  # 记录调用并照常执行
+_owb = _WBA4.write_branch
+_WBA4.write_branch = lambda self, p, t: _owb(self, p, t + [{"sessionId": "OLD-SRC-STILL-HERE"}])  # 造 verify 必失败的坏内容
+_ovb = _eng.verify_branch
+_try_verify_fail = False
+try:
+    _cf(_WBA4(), _lsrc, name="T", dry_run=False)
+except _FVE:
+    _try_verify_fail = True
+finally:
+    _WBA4.write_branch = _owb
+    _WBA4.register_branch = _oreg
+    _eng.verify_branch = _ovb
+assert _try_verify_fail, "坏内容应触发 ForkVerifyError"
+# 断言 verify 失败时 register 从未被调用（顺序焊死）
+assert _reg_calls == [], "verify 失败时 register 不应被调用"
+# 断言零痕迹：无 dst 文件、无 tmp 残留、db 只有源
+_lf = os.listdir(os.path.join(_wb5.PROJECTS_DIR, "Users-x-test"))
+assert all(".tmp" not in f for f in _lf), "tmp 不应残留"
+assert len([f for f in _lf if f != _lsrc+".jsonl"]) == 0, "不应有分支文件"
+print("✓ 顺序焊死: verify 失败时 register 零调用 + tmp/dst 零残留")
+
+# 15b. dry-run 走完整校验（坏内容时 dry-run 也要报 ForkVerifyError）
+_dry_fail = False
+_owb2 = _WBA4.write_branch
+_WBA4.write_branch = lambda self, p, t: _owb2(self, p, t + [{"sessionId": "OLD-SRC"}])
+try:
+    _cf(_WBA4(), _lsrc, name="T", dry_run=True)
+except _FVE:
+    _dry_fail = True
+finally:
+    _WBA4.write_branch = _owb2
+assert _dry_fail, "dry-run 遇到坏内容应报 ForkVerifyError（洞 5：dry-run 也要校验）"
+# dry-run 正常内容应 verified=True
+_rv = _cf(_WBA4(), _lsrc, name="T", dry_run=True)
+assert _rv.verified, "dry-run 应返回 verified=True"
+assert not os.path.exists(_rv.dst_path), "dry-run 不应落位正式文件"
+print("✓ dry-run 校验: 正常内容 verified=True，坏内容抛 ForkVerifyError，不落位")
+
+# 15c. rollback 失败显式报错（safe_remove 返回 False → ForkRollbackError 带路径）
+import fork_core.engine as _eng2
+_orig_sr = _eng2._safe_remove
+def _fake_sr(path):
+    if path.endswith(".jsonl") and ".tmp" not in path:
+        return False  # dst 删不掉
+    return _orig_sr(path)
+_eng2._safe_remove = _fake_sr
+_reg_throw = False
+_owb3 = _WBA4.register_branch
+_WBA4.register_branch = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down"))
+try:
+    try:
+        _cf(_WBA4(), _lsrc, name="T", dry_run=False)
+    except _FRE as e:
+        _reg_throw = True
+        assert _lsrc or True
+finally:
+    _WBA4.register_branch = _owb3
+    _eng2._safe_remove = _orig_sr
+assert _reg_throw, "回滚失败应抛 ForkRollbackError（不静默）"
+print("✓ rollback 显式报错: 删不掉抛 ForkRollbackError（含人工清理提示）")
+shutil.rmtree(_l0_tmp)
+
+
 
 print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树/rewrite 专项/真库体检/原子性）")
+
+# ============================================================
+# 13. dry_run 不崩溃（回归：rewrite 移入 if 后 ForkResult 引用局部名）v2.4.3
+# ============================================================
+_dr_tmp = _tf.mkdtemp(prefix="wb-dry-")
+import importlib, fork_core.adapters.workbuddy as _wb3
+_wb3.DB_PATH = os.path.join(_dr_tmp, "workbuddy.db")
+_wb3.PROJECTS_DIR = os.path.join(_dr_tmp, "projects")
+_wb3.LINEAGE_PATH = os.path.join(_dr_tmp, "fork.lineage.json")
+os.makedirs(os.path.join(_wb3.PROJECTS_DIR, "Users-x-test"))
+_dc = sqlite3.connect(_wb3.DB_PATH)
+_dc.execute("""CREATE TABLE sessions (id TEXT, cwd TEXT NOT NULL, user_id TEXT NOT NULL,
+    title TEXT, custom_title TEXT, status TEXT NOT NULL DEFAULT 'Pending',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER,
+    is_playground INTEGER NOT NULL DEFAULT 0, last_activity_at INTEGER)""")
+_dc.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,is_playground) VALUES (?,?,?,?,?,?,?)",
+            ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
+_dc.commit(); _dc.close()
+_dsrc = "SRC-1111-2222-3333-4444"
+with open(os.path.join(_wb3.PROJECTS_DIR, "Users-x-test", _dsrc+".jsonl"), "w") as f:
+    for l in [
+        {"type":"message","role":"user","sessionId":_dsrc,"content":[{"type":"input_text","text":"hi"}]},
+        {"type":"message","role":"assistant","sessionId":_dsrc,"content":[{"type":"output_text","text":"ok"}]},
+        {"type":"message","role":"user","sessionId":_dsrc,"content":[{"type":"input_text","text":"打分支"}]},
+    ]: f.write(json.dumps(l)+"\n")
+from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA2
+_dr = _cf(_WBA2(), _dsrc, name="T", dry_run=True)  # 不应 UnboundLocalError
+assert _dr.ok and _dr.verified, "dry-run 应 ok 且 verified"
+assert _dr.cut == 2, "dry-run 应报截断点"
+print(f"✓ dry_run 正常（截断 L{_dr.cut}，不崩溃）")
+shutil.rmtree(_dr_tmp)
+print("\n✅ WorkBuddy adapter 全部测试通过（含 dry_run/原子性/回滚/真库体检）")

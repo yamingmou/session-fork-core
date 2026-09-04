@@ -45,6 +45,8 @@ class ForkResult:
     backup_dir: Optional[str] = None
     error: Optional[str] = None
     replacements: int = 0
+    dry_run: bool = False
+    verified: bool = False
 
 
 @dataclass
