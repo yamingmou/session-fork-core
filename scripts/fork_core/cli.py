@@ -12,7 +12,7 @@ import time
 
 from . import available, create_fork, get_adapter, list_forks
 
-VERSION = "2.4.1"
+VERSION = "2.4.2"
 
 
 def print_tree(metas) -> None:

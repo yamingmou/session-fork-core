@@ -355,12 +355,26 @@ def create_fork(
     dst = os.path.join(os.path.dirname(transcript), new_id + ".jsonl")
     if not dry_run:
         adapter.write_branch(dst, truncated)
-
-    if not dry_run:
-        adapter.register_branch(src_meta, new_id, dst, name, parent_id=src_meta.id, at_seq=cut)
+        # 先验证后注册（2026-09-04 学习 Marvis 事务内自检：自检不过不留半成品）。
+        # 原顺序 verify 在 register 之后——VERIFY FAILED 时脏分支已写文件+落 db+记 lineage，
+        # 侧边栏出现错误分支（真实事故来源）。现改为：文件写完立即 verify，失败删文件
+        # 直接 raise——无 db/lineage 痕迹；只有内容验证通过才注册。
         errs = verify_branch(adapter, dst, new_id, cut, src_id)
         if errs:
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
             raise SystemExit("VERIFY FAILED:\n  - " + "\n  - ".join(errs))
+        try:
+            adapter.register_branch(src_meta, new_id, dst, name, parent_id=src_meta.id, at_seq=cut)
+        except Exception:
+            # 注册失败（db/lineage 异常）：删已写文件，不留"验证通过但未登记"的孤儿
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+            raise
 
     return ForkResult(
         ok=True,

@@ -186,4 +186,55 @@ print(f"✓ fork --verify: {len(items)} 项全绿，真实数据替换 L2（{len
 
 import shutil
 shutil.rmtree(tmpdir)
-print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树/rewrite 专项/真库体检）")
+
+# ============================================================
+# 12. 原子性：verify 失败不留半成品（学习 Marvis 事务内自检，v2.4.2）
+#     verify 前置到 register 之前；失败删文件，无 db/lineage 痕迹
+# ============================================================
+import tempfile as _tf
+import fork_core.engine as _eng
+
+_atom_tmp = _tf.mkdtemp(prefix="wb-atom-")
+import fork_core.adapters.workbuddy as wb_mod2
+wb_mod2.DB_PATH = os.path.join(_atom_tmp, "workbuddy.db")
+wb_mod2.PROJECTS_DIR = os.path.join(_atom_tmp, "projects")
+wb_mod2.LINEAGE_PATH = os.path.join(_atom_tmp, "fork.lineage.json")
+os.makedirs(os.path.join(wb_mod2.PROJECTS_DIR, "Users-x-test"))
+_c = sqlite3.connect(wb_mod2.DB_PATH)
+_c.execute("""CREATE TABLE sessions (id TEXT, cwd TEXT NOT NULL, user_id TEXT NOT NULL,
+    title TEXT, custom_title TEXT, status TEXT NOT NULL DEFAULT 'Pending',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER,
+    is_playground INTEGER NOT NULL DEFAULT 0, last_activity_at INTEGER)""")
+_c.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,is_playground) VALUES (?,?,?,?,?,?,?)",
+           ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
+_c.commit(); _c.close()
+_src = "SRC-1111-2222-3333-4444"
+with open(os.path.join(wb_mod2.PROJECTS_DIR, "Users-x-test", _src+".jsonl"), "w") as f:
+    for l in [
+        {"type":"message","role":"user","sessionId":_src,"content":[{"type":"input_text","text":"hi"}]},
+        {"type":"message","role":"assistant","sessionId":_src,"content":[{"type":"output_text","text":"ok"}]},
+        {"type":"message","role":"user","sessionId":_src,"content":[{"type":"input_text","text":"打分支"}]},
+    ]: f.write(json.dumps(l)+"\n")
+
+_orig_vb = _eng.verify_branch
+_eng.verify_branch = lambda *a, **k: ["forced failure"]
+from fork_core.engine import create_fork as _cf
+from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA
+_atom_a = _WBA()
+_try_fail = False
+try:
+    _cf(_atom_a, _src, name="T", dry_run=False)
+except SystemExit:
+    _try_fail = True
+_eng.verify_branch = _orig_vb
+assert _try_fail, "verify 失败应 raise"
+_c2 = sqlite3.connect(wb_mod2.DB_PATH)
+_n = _c2.execute("SELECT count(*) FROM sessions").fetchone()[0]
+_c2.close()
+_files = os.listdir(os.path.join(wb_mod2.PROJECTS_DIR, "Users-x-test"))
+_lin = json.load(open(wb_mod2.LINEAGE_PATH)) if os.path.exists(wb_mod2.LINEAGE_PATH) else {"forks": []}
+assert _n == 1 and len(_files) == 1 and not _lin.get("forks"), "verify 失败应不留痕迹"
+shutil.rmtree(_atom_tmp)
+print("✓ 原子性: verify 失败不留半成品（db/文件/lineage 全干净）")
+
+print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树/rewrite 专项/真库体检/原子性）")
