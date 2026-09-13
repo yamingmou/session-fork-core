@@ -3,7 +3,7 @@
 把一段对话**复制**出一个独立分支：默认以上一轮对话的输出结束为截断点（也可按你指定的某条回复截断），截取会话前缀生成**新会话**。之后原会话继续，分支独立发展——**回到某个节点继续讨论，而不丢任何历史**。适合"聊岔了想回到上一轮重新来"、"同一主题开几条平行线分别讨论"。
 
 - 当前支持：**WorkBuddy**（打分支技能）；跨平台版本开发中
-- 版本：2.4.3
+- 版本：2.4.4
 - 作者：OfferKuai（Offer快）团队 | License：MIT
 
 ## 功能特性
@@ -70,6 +70,7 @@ fork --list --tree
 
 - **GitHub 仓库**：https://github.com/yamingmou/session-fork-core
 - **SkillHub**：https://skillhub.cn 搜索 `session-fork`（作者 `@user_5b43da63`）
+- **WorkBuddy 开放平台**：https://open.workbuddy.cn/ （技能市场搜索 `会话分叉`）
 
 ## 署名 / About
 

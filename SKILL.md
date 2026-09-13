@@ -2,8 +2,12 @@
 name: session-fork
 slug: session-fork
 displayName: 会话分叉（打分支）
+display_name: 会话分叉（打分支）
+display_name_en: Session Fork
 description: 把当前（或指定）AI 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。基于 fork-core 通用引擎（Fork = Projection Derivative 投影派生），跨产品可用（WorkBuddy 适配器默认，Claude Code 等适配器验证中）。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-version: 2.4.3
+description_zh: 把当前（或指定）AI 会话复制成独立新分支（时间线分叉）——默认在上一轮输出结束处截断，也可按指定的某条回复精确截断；原会话继续、分支独立演进，回到某个节点继续讨论而不丢历史。
+description_en: Fork the current (or specified) AI session into an independent new branch at a chosen cut point — by default the end of the previous turn's output, or any reply you specify. The original session keeps running while the branch evolves on its own, so you can resume from any node without losing history.
+version: 2.4.4
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, claude-code, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
@@ -230,7 +234,7 @@ fork --session current --adapter claude-code       # 其他产品（验证中，
 | 分支打开后**末尾多了一段不是我的内容** | 主进程在创建后继续向分支文件追加了消息（脚本不锁只读）| 用 `fork --fix <分支会话ID>` 重截断到谱系记录的 at_seq |
 | 原会话之后的新消息没进分支 | 快照特性（复制发生在读取时刻）——正常行为，不是丢数据 | 无需处理 |
 | 分支文件找不到 / db 有记录但文件被删 | 外部清理 | 无恢复必要则删 db 行（分支是快照，内容已在源会话） |
-| `--verify` 体检某分支报"源 id 残留" | 该分支在旧版本（v2.2.0 前）创建，替换不彻底 | 历史脏分支：重新打分支后删除旧分支（备份后） |
+| `--verify` 体检某分支报"源 id 残留" | 两种可能：①（v2.4.3 及更早）该分支在 v2.2.0 前创建，替换不彻底；②**误报**——fork 后主进程追加的消息里恰好出现源 id（如 `ls ~/.workbuddy/tasks` 输出中恰好有个同名目录）。v2.4.4 起追加区**只对工具/函数 I/O 字段宽容**，正文等其余字段仍从严 | ①历史脏分支：重新打分支后删除旧分支（备份后）；②升级到 v2.4.4+ 即可。若该分支谱系 `at_seq` 缺失或与实际不符，校验会**故意退回更宽的旧边界**——宁可误报也不漏检，此时重打一次该分支即可 |
 
 ---
 
@@ -246,3 +250,12 @@ MIT License — free to use, modify and redistribute with attribution.
 
 **Source (GitHub):** https://github.com/yamingmou/session-fork-core
 **Install (SkillHub):** `skillhub install session-fork --namespace user_5b43da63`（或 https://skillhub.cn 搜索 `session-fork`）
+**Install (WorkBuddy 开放平台):** https://open.workbuddy.cn/ — 技能市场搜索 `会话分叉`
+
+## 更新日志
+
+- **v2.4.4** — 开放平台元数据合规（`display_name` / `display_name_en` / `description_zh` / `description_en`，双渠道 frontmatter 并存）；修复 `--verify` 分支校验误报（fork 后追加的消息里恰好出现源 id 时不再误判"残留"）——判定改为三层：① fork 前缀（按谱系快照点 `at_seq` 划界）任意字段从严；② 全文件 `sessionId` 结构性残留硬查（不依赖边界）；③ 快照点之后的追加区**只对工具/函数 I/O 字段宽容**（那里出现源 id 属对话内容，如 `ls` 输出里的同名目录），其余字段同样从严——所以即便 `at_seq` 记录偏小，"被跳过的那段"里的正文残留照样会被抓；另修复测试污染生产谱系索引（测试未隔离 `LINEAGE_PATH`）。
+- **v2.4.3** — L0 事务化：`tmp` 原子写 + 落位前校验 + 异常分层（`ForkError`/`ForkVerifyError`/`ForkRegisterError`/`ForkRollbackError`）+ `--dry-run` 走完整校验路径。
+- **v2.4.2** — 创建原子性：verify 前置到注册之前，校验失败不留半成品（db / 文件 / 谱系全干净）。
+- **v2.4.1** — 安全修复：`--session` 路径越界防护（拒绝分隔符 + realpath 容器校验）；体检结论诚实化（区分 L1/L2/L3）。
+- **v2.4.0** — 验证体系闭环：递归 id 替换 + 原始内容黑名单；`--verify` 真库体检升级为发布前必检。

@@ -7,6 +7,7 @@ WorkBuddy / Claude Code / Codex 的差异全部被 adapter 吸收。
 import copy
 import json
 import os
+import re
 import stat
 import shutil
 import time
@@ -192,12 +193,15 @@ def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) ->
 # fork --verify / --doctor：真库体检（把"真库验证"从靠用户兜底变成内置强制检查）
 # ----------------------------------------------------------------------
 
-def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, bool, str]]:
+def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, bool, str, int | None]]:
     """收集真实会话 transcript：分类为 源会话 / 分支，各自取最新 limit 个。
 
-    返回 [(path, session_id, is_branch, parent_id_or_empty)]。
+    返回 [(path, session_id, is_branch, parent_id_or_empty, at_seq_or_None)]。
     分支识别：查谱系索引（lineage forks / branches）——分支必须用其 parent_id（源 id）
     做残留校验（分支正确时源 id 已被替换干净，若残留 = rewrite 回归）。
+    at_seq = fork 当时的快照点（复制出的前缀行数），分支校验必须用它当边界：
+    fork 后产品会继续往分支文件追加消息，用"当前最后一轮"当边界会把追加内容
+    误判成残留（2026-09-14 修复）。
     """
     found: list[tuple[str, str]] = []
     projects = getattr(adapter, "PROJECTS_DIR", None)
@@ -212,17 +216,27 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, b
                 found.append((os.path.join(p, fn), fn[:-6]))
     found.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
 
-    # 分支集合 + parent 映射（从旁路谱系索引；_lineage_get 返回 {fork_id: {...}}）
+    # 分支集合 + parent 映射 + 快照点（从旁路谱系索引；_lineage_get 返回 {fork_id: {...}}）
+    # parent_id 为空的一律**不算分支**：空串会让 `old_id in v` 恒真 → 全字段误判污染
+    # （2026-09-14 审查）。宁可退化为"当源会话检查"，也不要制造假红。
     branch_parent: dict[str, str] = {}
+    branch_atseq: dict[str, int | None] = {}
     try:
         if hasattr(adapter, "_lineage_get"):
             data = adapter._lineage_get()
-            branch_parent = {fid: f.get("parent_id", "") for fid, f in data.items() if f.get("parent_id")}
+            branch_parent = {
+                fid: f.get("parent_id") for fid, f in data.items() if f.get("parent_id")
+            }
+            branch_atseq = {
+                fid: f.get("at_seq") for fid, f in data.items() if f.get("parent_id")
+            }
         elif hasattr(adapter, "_read_index"):
             data = adapter._read_index()
             for f in data.get("branches", []):
-                if f.get("id"):
-                    branch_parent[f["id"]] = f.get("parent_id") or f.get("source_id") or ""
+                pid = f.get("parent_id") or f.get("source_id")
+                if f.get("id") and pid:
+                    branch_parent[f["id"]] = pid
+                    branch_atseq[f["id"]] = f.get("at_seq")
     except Exception:
         pass
 
@@ -230,14 +244,18 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, b
     branches = [f for f in found if f[1] in branch_parent]
     result = []
     for path, sid in sources[:limit]:
-        result.append((path, sid, False, ""))
+        result.append((path, sid, False, "", None))
     for path, sid in branches[:limit]:
-        result.append((path, sid, True, branch_parent.get(sid, "")))
+        result.append((path, sid, True, branch_parent.get(sid, ""), branch_atseq.get(sid)))
     return result
 
 
-def _find_residue(objs: list[dict], old_id: str, raw_keys: set) -> list[str]:
-    """递归找旧 id 在非黑名单字段中的残留位置（黑名单 = 原始内容键，允许含旧 id）。"""
+def _find_residue(objs: list[dict], old_id: str, raw_keys: set, start: int = 1) -> list[str]:
+    """递归找旧 id 在非黑名单字段中的残留位置（黑名单 = 原始内容键，允许含旧 id）。
+
+    start = objs[0] 在**原文件**中的行号（1-based）。传切片时用它校正行号，
+    否则报告会把 L7740 之类的真实行号压成 L1，误导排障（2026-09-14 审查）。
+    """
     hits = []
 
     def walk(node, path):
@@ -254,8 +272,61 @@ def _find_residue(objs: list[dict], old_id: str, raw_keys: set) -> list[str]:
                 walk(v, f"{path}[{i}]")
 
     for i, o in enumerate(objs, 1):
+        walk(o, f"L{start + i - 1}")
+    return hits
+
+
+def _find_structural_residue(objs: list[dict], old_id: str) -> list[str]:
+    """结构性残留：old_id 出现在**会话关联字段**（`sessionId` / `session_id`）的值上
+    ——**不依赖任何行边界**。
+
+    分支产物正确时，文件内所有会话关联字段都应是分支自己的 id（fork 时已递归改写），
+    fork 之后追加的消息也属于分支本人。所以它等于源 id 一定是真污染，
+    与"前缀/追加区"如何划分无关——即便谱系 `at_seq` 记录偏小也拦得住这一类。
+
+    两个键都查：WorkBuddy 用 `sessionId`，其他产品/事件行可能用 `session_id`
+    （创建期 verify_branch 也是两者都查，此处对齐，2026-09-14 审查）。
+    `parentId` 是合法的谱系字段，允许等于源 id，不查。
+
+    说明：本检查是**纵深防御层**（belt-and-braces），与 `_find_residue` 在
+    `sessionId`/`session_id` 上存在功能重叠（后者也能命中这两个键）。保留它的价值有二：
+    ① 不依赖"前缀/追加区"如何划分——即便未来有人改动边界或宽容逻辑，这一类仍硬拦；
+    ② 失败原因可明确报成"会话关联字段结构性残留"而非泛泛的残留。
+    它**不是**某条测试的专属兜底，别据此推断覆盖范围（2026-09-14 第四轮审查）。
+    """
+    hits = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in _SESSION_ID_KEYS and isinstance(v, str) and old_id in v:
+                    hits.append(f"{path}.{k}" if path else k)
+                walk(v, f"{path}.{k}" if path else k)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]")
+
+    for i, o in enumerate(objs, 1):
         walk(o, f"L{i}")
     return hits
+
+
+_SESSION_ID_KEYS = ("sessionId", "session_id")
+
+
+# 工具/函数 I/O 数据字段（**段级**精确匹配，避免 "outputsList" 这类误伤）。
+# fork 之后追加的消息里，这些字段出现源 id 通常是**合法对话内容**——典型：
+# `ls ~/.workbuddy/tasks` 的输出里恰好有个目录叫源会话 UUID（2026-09-14 真实误报案例）。
+# 注意：宽容**仅在追加区确实开启新回合时**生效（见 verify_environment），
+# 否则被错误放大的"追加区"会借它掩盖真污染。
+_TOOL_IO_FIELD_NAMES = frozenset({
+    "output", "arguments", "argumentsDisplayText", "toolResult", "renderer", "error",
+})
+
+
+def _is_tool_io_path(path: str) -> bool:
+    segs = re.split(r"[.\[]", path)
+    return any(s in _TOOL_IO_FIELD_NAMES for s in segs)
 
 
 def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
@@ -286,24 +357,85 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
         raw_keys = getattr(adapter, "_RAW_KEYS", set())
         n_src = sum(1 for r in real if not r[2])
         n_br = len(real) - n_src
-        for path, sid, is_branch, parent_id in real:
+        for path, sid, is_branch, parent_id, at_seq in real:
             lines = _load_lines(path)
             if not lines:
                 items.append(VerifyItem(f"真实数据验证 {sid[:8]}", "L2", False, "transcript 为空或不可读"))
                 continue
-            try:
-                cut, total = locate_last_reply(adapter, lines)
-            except ForkError as e:
-                items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
-                continue
             if is_branch:
-                # 分支产物验证：源 id 必须零残留（黑名单除外）
-                residue = _find_residue(lines[:cut], parent_id, raw_keys)
-                ok = not residue
-                detail = f"源 id {parent_id[:8]} 零残留（分支产物正确）" if ok else \
-                         f"源 id 残留 {len(residue)} 处：{residue[:3]}（分支被污染/rewrite 回归）"
+                # 分支产物验证：源 id 不得残留（黑名单除外）。三层判定，从严到宽：
+                #   ① 前缀（= fork 复制出的部分，边界取谱系快照点 at_seq）：任意字段残留 → 硬失败；
+                #   ② 全文件 sessionId 结构性残留（不依赖边界）→ 硬失败；
+                #   ③ 快照点之后的追加区：**只对工具/函数 I/O 字段宽容**（那里出现源 id 通常
+                #      是合法对话内容——真实案例：追加的 `ls` 输出里恰好有个目录叫源会话 UUID），
+                #      其余字段（如消息正文 content[].text）出现源 id 仍判污染。
+                # ③ 是关键：它让"at_seq 记录偏小、跳过了真实前缀的一段"不再**静默漏检**——
+                # 被跳过的部分若含非工具字段残留，一样会被抓（2026-09-14 第二轮独立审查）。
+                # 即：边界只决定"哪一段算前缀"，不决定"是否检查"。
+                boundary = at_seq if isinstance(at_seq, int) and at_seq > 0 else None
+                if boundary is not None and (
+                    boundary > len(lines)
+                    or not adapter.is_assistant_message(lines[boundary - 1])
+                ):
+                    # at_seq 结构性不可信（越界 / 不是完整 assistant 回复收尾）→ 弃用，
+                    # 退回更宽的"当前最后一轮"边界：只会误报，不会漏检。
+                    boundary = None
+                if boundary is None:
+                    try:
+                        boundary, _ = locate_last_reply(adapter, lines)
+                    except ForkError as e:
+                        items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
+                        continue
+                boundary = min(boundary, len(lines))
+
+                prefix_hits = _find_residue(lines[:boundary], parent_id, raw_keys)
+                tail_hits = (
+                    _find_residue(lines[boundary:], parent_id, raw_keys, start=boundary + 1)
+                    if len(lines) > boundary else []
+                )
+                # 宽容只在"追加区确实开启新回合"时生效：合法追加必然是一条新的 user 回合
+                # （两个真实分支实测：L(at_seq+1) 都是 user 消息）。若边界后紧跟的不是 user
+                # 消息，这段更像"被错误放大成追加区的前缀"——此时一律从严，宁可误报，
+                # 也不让 at_seq 记录偏小借宽容掩盖真污染（2026-09-14 第三轮独立审查）。
+                tail_is_new_turn = (
+                    len(lines) > boundary and adapter.is_user_message(lines[boundary])
+                )
+                tail_hard = [
+                    p for p in tail_hits
+                    if not (tail_is_new_turn and _is_tool_io_path(p))
+                ]
+                structural = _find_structural_residue(lines, parent_id)
+
+                bad = prefix_hits + tail_hard + structural
+                ok = not bad
+                if ok:
+                    notes = [f"判定前缀 L{boundary}"]
+                    if len(lines) > boundary:
+                        note = f"fork 后追加 {len(lines) - boundary} 行不计入"
+                        if tail_hits:
+                            if tail_is_new_turn:
+                                note += (f"（其中 {len(tail_hits)} 处源 id 引用落在工具 I/O 字段，"
+                                         f"属对话内容）")
+                            else:
+                                note += "（**未开启新回合，已按从严处理**）"
+                        notes.append(note)
+                    notes.append("全文件 sessionId/session_id 零残留")
+                    detail = f"源 id {parent_id[:8]} 零残留（" + "；".join(notes) + "）"
+                else:
+                    if structural:
+                        why = "会话关联字段（sessionId/session_id）结构性残留 = 真污染"
+                    elif tail_hard:
+                        why = "快照点之后的非工具字段残留（at_seq 可能不可信）"
+                    else:
+                        why = "前缀残留 = rewrite 回归"
+                    detail = f"源 id 残留 {len(bad)} 处：{bad[:3]}（{why}）"
                 items.append(VerifyItem(f"分支产物校验 {sid[:8]}", "L2", ok, detail))
             else:
+                try:
+                    cut, total = locate_last_reply(adapter, lines)
+                except ForkError as e:
+                    items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
+                    continue
                 # 源会话：模拟 rewrite，验证引擎替换能力
                 new_id = "verify-" + uuid.uuid4().hex[:12]
                 rewritten, n = adapter.rewrite_ids(copy.deepcopy(lines[:cut]), sid, new_id)

@@ -18,6 +18,9 @@ os.makedirs(proj_dir, exist_ok=True)
 
 wb_mod.DB_PATH = db_path
 wb_mod.PROJECTS_DIR = os.path.join(tmpdir, "projects")
+# 谱系索引也必须隔离：否则测试造的分支会被写进**生产** ~/.workbuddy/fork.lineage.json
+# （2026-09-14 修复——此前测试跑一次就往真实谱系塞 2 条 cwd=/tmp/test 的假分支）
+wb_mod.LINEAGE_PATH = os.path.join(tmpdir, "fork.lineage.json")
 
 # 造源会话行（schema 完全对齐真库 ~/.workbuddy/workbuddy.db sessions 表）
 conn = sqlite3.connect(db_path)
@@ -183,6 +186,117 @@ assert not fails, f"verify 有失败项: {[(i.name, i.detail) for i in fails]}"
 assert real_replace, "verify 未跑真实数据替换验证"
 assert all(it.level == "L2" for it in real_replace), "真实数据替换应为 L2"
 print(f"✓ fork --verify: {len(items)} 项全绿，真实数据替换 L2（{len(real_replace)} 个会话）")
+
+# ============================================================
+# 11b. 分支校验边界回归（v2.4.4）：
+#      fork 完成后产品会继续往分支文件追加消息；追加内容里可能恰好出现源会话 id
+#      （真实案例：追加的 `ls ~/.workbuddy/tasks` 输出里有个目录叫源会话 UUID）。
+#      旧实现用"当前最后一轮"当边界 → 把追加内容算进来 → 误报"源 id 残留"。
+#      正确边界 = 谱系记录的快照点 at_seq（= fork 复制出的前缀行数）。
+# ============================================================
+from fork_core.engine import _find_residue, _load_lines, locate_last_reply
+
+appended = [
+    # ① 合法追加必然开启新回合：首行是 user 消息
+    #    （两个真实分支实测：L(at_seq+1) 都是 user 消息）
+    {"type": "message", "role": "user", "sessionId": r.new_id,
+     "content": [{"type": "input_text", "text": "继续"}]},
+    # ② 追加的 tool 输出里恰好含源会话 id（这正是真实误报的形态）
+    {"type": "function_call", "sessionId": r.new_id, "name": "bash",
+     "output": {"text": f"=== 最近的任务 uuid ===\n{src_id}\n"}},
+    # ③ 末尾再来一条 assistant 回复，使"当前最后一轮"落到毒行之后
+    {"type": "message", "role": "assistant", "sessionId": r.new_id,
+     "content": [{"type": "output_text", "text": "已列出。"}]},
+]
+with open(r.dst_path, "a", encoding="utf-8") as f:
+    for o in appended:
+        f.write(json.dumps(o, ensure_ascii=False) + "\n")
+
+items_b = verify_environment(adapter)
+_br = [it for it in items_b if it.name.startswith("分支产物校验")]
+assert _br, "分支产物校验项缺失"
+_bad = [it for it in _br if not it.ok]
+assert not _bad, f"fork 后追加内容被误判为源 id 残留: {[(i.name, i.detail) for i in _bad]}"
+
+# 负向验证：旧边界（当前最后一轮）在同一数据上必然误报 → 证明本用例有真实拦截力
+_lines_now = _load_lines(r.dst_path)
+_old_cut, _ = locate_last_reply(adapter, _lines_now)
+_old_residue = _find_residue(_lines_now[:_old_cut], src_id, getattr(adapter, "_RAW_KEYS", set()))
+assert _old_residue, "负向验证失败：旧边界逻辑本应误报，说明用例没打到点上"
+
+print(f"✓ 分支校验边界: fork 后追加 {len(appended)} 行不计入"
+      f"（{len(_br)} 项全绿；负向验证：旧边界会误报 {len(_old_residue)} 处）")
+
+# ============================================================
+# 11c. 边界可信度兜底（v2.4.4，独立审查发现的"漏检比误报危险"）：
+#      只查 at_seq 前缀 → 若 at_seq 偏小会**静默漏检**。
+#      两道兜底：① at_seq 不可信则退回更宽边界（只会误报，不会漏检）；
+#                ② 全文件 sessionId 结构性检查（不依赖边界，永远硬拦）。
+# ============================================================
+_branch_item_name = f"分支产物校验 {r.new_id[:8]}"
+
+def _set_at_seq(v):
+    d = json.load(open(wb_mod.LINEAGE_PATH, encoding="utf-8"))
+    for f in d["forks"]:
+        if f["id"] == r.new_id:
+            f["at_seq"] = v
+    with open(wb_mod.LINEAGE_PATH, "w", encoding="utf-8") as fh:
+        json.dump(d, fh, ensure_ascii=False, indent=2)
+
+def _item():
+    hit = [it for it in verify_environment(adapter) if it.name == _branch_item_name]
+    assert hit, f"未找到 {_branch_item_name}"
+    return hit[0]
+
+# 兜底①：把 at_seq 改成不可信值（1 是 user 消息，不可能是"完整 assistant 回复"收尾的前缀）
+_set_at_seq(1)
+_it = _item()
+assert not _it.ok, f"at_seq 不可信时应退回宽边界并抓到残留，而不是静默通过：{_it.detail}"
+
+# 兜底②：恢复正确快照点，再追加一条 sessionId 直接等于源 id 的记录
+#        （真污染：产品会按 sessionId 把它路由回源会话）——位于快照点之后，边界查不到
+_set_at_seq(r.cut)
+with open(r.dst_path, "a", encoding="utf-8") as f:
+    f.write(json.dumps({
+        "type": "message", "role": "assistant", "sessionId": src_id,
+        "content": [{"type": "output_text", "text": "结构性污染"}],
+    }, ensure_ascii=False) + "\n")
+_it = _item()
+assert not _it.ok, f"结构性 sessionId 残留必须被抓到：{_it.detail}"
+assert "sessionId" in _it.detail, f"应指出是结构性残留：{_it.detail}"
+print(f"✓ 边界可信度兜底: at_seq 不可信 → 退回宽边界抓到残留；"
+      f"快照点后的 sessionId 结构性残留 → 不依赖边界硬拦")
+
+# ============================================================
+# 11d. 反例回归（第二轮独立审查）：at_seq 偏小、边界跳过的区域里
+#      残留落在**非工具 I/O 字段**（消息正文 content[].text）→ 必须仍判 Fail。
+#      只对工具/函数 I/O 字段宽容（那里出现源 id 是合法对话内容）。
+# ============================================================
+_clean = _load_lines(r.dst_path)[:r.cut]  # 回到"刚 fork 完"的干净前缀
+with open(r.dst_path, "w", encoding="utf-8") as f:
+    for _o in _clean:
+        f.write(json.dumps(_o, ensure_ascii=False) + "\n")
+    # ① 开启新回合的 user 消息 → 让"工具 I/O 宽容"确实生效（检验更严苛）
+    f.write(json.dumps({
+        "type": "message", "role": "user", "sessionId": r.new_id,
+        "content": [{"type": "input_text", "text": "继续"}],
+    }, ensure_ascii=False) + "\n")
+    # ② 正文里提到源会话 id（非工具字段 → 即便宽容生效也必须判污染）
+    f.write(json.dumps({
+        "type": "message", "role": "assistant", "sessionId": r.new_id,
+        "content": [{"type": "output_text", "text": f"正文提到 {src_id} 这个会话"}],
+    }, ensure_ascii=False) + "\n")
+    # ③ 一条干净的 assistant，保证文件仍以完整回复收尾
+    f.write(json.dumps({
+        "type": "message", "role": "assistant", "sessionId": r.new_id,
+        "content": [{"type": "output_text", "text": "收尾"}],
+    }, ensure_ascii=False) + "\n")
+
+_set_at_seq(r.cut)  # 边界正好落在干净前缀末尾 → 污染行被当成"追加内容"跳过
+_it = _item()
+assert not _it.ok, f"边界跳过的正文残留必须被抓到（反例场景）：{_it.detail}"
+assert "非工具字段" in _it.detail, f"应指出是非工具字段残留：{_it.detail}"
+print("✓ 反例回归: at_seq 跳过正文残留 → 仍判 Fail（非工具 I/O 字段从严）")
 
 import shutil
 shutil.rmtree(tmpdir)
