@@ -19,8 +19,9 @@ MIT License.
 import os
 import sys
 
-# 使脚本可直接运行（python3 scripts/create_branch.py）
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 使脚本可直接运行（python3 scripts/create_branch.py）：
+# 把技能根目录（本文件的上一级）加入模块搜索路径，以便 import 根目录下的 fork_core 包
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fork_core.cli import VERSION, main  # noqa: E402
 

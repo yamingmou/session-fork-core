@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fork-core"
-version = "2.4.4"
+version = "2.4.5"
 description = "Cross-product session forking engine (Fork = Projection Derivative). WorkBuddy / Claude Code / Codex adapters."
 readme = "README.md"
 license = { text = "MIT" }
@@ -29,5 +29,5 @@ fork = "fork_core.cli:main"
 fork-branch = "fork_core.cli:main"
 
 [tool.setuptools]
-package-dir = { "" = "scripts" }
-packages = ["fork_core", "fork_core.adapters"]
+# fork_core 包平铺在仓库根目录（WorkBuddy 开放平台限制技能包最多两级目录）
+packages = ["fork_core"]

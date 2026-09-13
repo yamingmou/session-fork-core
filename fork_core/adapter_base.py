@@ -1,4 +1,4 @@
-"""fork_core.adapters.base — TranscriptionAdapter 接口定义。
+"""fork_core.adapter_base — TranscriptionAdapter 接口定义。
 
 通用引擎只依赖本接口；每个产品（WorkBuddy / Claude Code / Codex ...）
 实现一个 adapter，把「产品特有存储格式」翻译成统一契约。
@@ -15,7 +15,7 @@
 import os
 from typing import Any, Optional
 
-from ..models import SessionMeta, VerifyItem
+from .models import SessionMeta, VerifyItem
 
 
 class TranscriptionAdapter:

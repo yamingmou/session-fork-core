@@ -1,4 +1,4 @@
-"""fork_core.adapters.workbuddy — WorkBuddy 产品适配器。
+"""fork_core.adapter_workbuddy — WorkBuddy 产品适配器。
 
 存储：
   - transcript: ~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl
@@ -14,8 +14,8 @@ import json
 import os
 import sqlite3
 
-from ..models import SessionMeta, VerifyItem
-from .base import TranscriptionAdapter
+from .models import SessionMeta, VerifyItem
+from .adapter_base import TranscriptionAdapter
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")

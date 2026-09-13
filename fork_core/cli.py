@@ -13,7 +13,7 @@ import time
 from . import available, create_fork, get_adapter, list_forks
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.4"
+VERSION = "2.4.5"
 
 
 def print_tree(metas) -> None:

@@ -1,4 +1,4 @@
-"""fork_core.adapters.claude_code — Claude Code 产品适配器（验证用，不宣传）。
+"""fork_core.adapter_claude_code — Claude Code 产品适配器（验证用，不宣传）。
 
 存储：
   - transcript: ~/.claude/projects/<slug>/<session-id>.jsonl
@@ -15,8 +15,8 @@ projects.json 旁路索引（fork.branches.json），不污染 Claude Code 自�
 import json
 import os
 
-from ..models import SessionMeta, VerifyItem
-from .base import TranscriptionAdapter
+from .models import SessionMeta, VerifyItem
+from .adapter_base import TranscriptionAdapter
 
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")

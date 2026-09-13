@@ -13,7 +13,7 @@ import shutil
 import time
 import uuid
 
-from .adapters.base import TranscriptionAdapter
+from .adapter_base import TranscriptionAdapter
 from .models import ForkResult, SessionMeta, VerifyItem
 
 # 备份目录默认 ~/.workbuddy/backups（可通过环境变量覆盖）

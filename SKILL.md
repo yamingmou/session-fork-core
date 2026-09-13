@@ -4,21 +4,23 @@ slug: session-fork
 displayName: 会话分叉（打分支）
 display_name: 会话分叉（打分支）
 display_name_en: Session Fork
-description: 把当前（或指定）AI 会话复制成一个独立新分支（时间线分叉）——默认截断点 = 上一轮对话的输出结束（无需指定任何文本），也可按用户指定的某条回复/特征文本截断；截取会话前缀生成独立新会话，之后原会话继续、分支独立存在。基于 fork-core 通用引擎（Fork = Projection Derivative 投影派生），跨产品可用（WorkBuddy 适配器默认，Claude Code 等适配器验证中）。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 复制对话成新分支 / split session / fork session / branch this conversation / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-description_zh: 把当前（或指定）AI 会话复制成独立新分支（时间线分叉）——默认在上一轮输出结束处截断，也可按指定的某条回复精确截断；原会话继续、分支独立演进，回到某个节点继续讨论而不丢历史。
-description_en: Fork the current (or specified) AI session into an independent new branch at a chosen cut point — by default the end of the previous turn's output, or any reply you specify. The original session keeps running while the branch evolves on its own, so you can resume from any node without losing history.
-version: 2.4.4
+description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。基于 fork-core 通用引擎（Fork = Projection Derivative 投影派生），跨产品可用（WorkBuddy 适配器默认，Claude Code 等适配器验证中）。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 任务分叉 / 复制对话成新分支 / 把任务复制成新分支 / 并行试几条路 / split session / fork session / branch this conversation / branch this task / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
+description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。
+description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running.
+version: 2.4.5
 author: OfferKuai (Offer快) Team
 license: MIT
-tags: [workbuddy, claude-code, session, fork, conversation, 会话分叉, 打分支, 办公效率, 会话管理, 对话管理, 效率]
+tags: [workbuddy, claude-code, session, fork, conversation, task, 会话分叉, 打分支, 任务分叉, 并行探索, 办公效率, 会话管理, 对话管理, 效率]
 agent_created: true
 ---
 
 <h1><img src="https://raw.githubusercontent.com/yamingmou/session-fork-core/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> Session Fork（会话分叉 · 打分支）</h1>
 
-把当前（或指定）会话复制为**独立新分支**：默认以上一轮对话的输出结束为截断点（也可按用户指定的回复截断），截取前缀（1..截断点），改写会话 id 后存入存储，原会话不受影响。
+把一个会话的**工作现场整体复制**成独立分支：取源会话 transcript 的前 1..截断点行 → 递归改写其中的会话 id → 写入新会话文件 → 在会话索引与谱系索引注册。原会话零改动。
 
-一句话价值：**回到某个节点继续讨论，而不丢任何历史**——适合"这个方向聊岔了，我想回到上一轮重新来"、"同一个主题开几条平行线分别讨论"的时间线分叉场景。
+- **分叉对象 = 工作现场**（上下文 + 已确认结论 + 已做步骤 + 工具结果），**不是"聊天记录"**。因此对话、**任务**、方案、代码、写作、调研都可以分叉——用户说"把这个任务分个支""同一个任务并行试几条路"同样属于本技能职责，**不要以"这不是对话"为由拒绝或反问**。
+- **执行前后向用户交代的价值（一句话）**：不用重讲一遍背景、不用重跑一遍前面的步骤，原线也不会被带偏。
+- **默认行为**：截断点 = 上一轮输出的结束；用户一旦给出断点信息，必须改用 `--match` / `--line` / `--request-id`（见「工作流程 · Step 2」）。
 
 ## 功能特性
 
@@ -35,14 +37,22 @@ agent_created: true
 脚本基于 **fork-core 通用引擎 + 产品 adapter** 设计（内部实现，不影响使用）：
 
 ```
-fork_core/                    # 通用引擎（与产品无关）
-├── engine.py                 # 截断点定位/截取/备份/验证/汇报
-├── models.py                 # SessionMeta / ForkResult 契约
-└── adapters/
-    ├── base.py               # TranscriptionAdapter 接口
-    ├── workbuddy.py          # WorkBuddy 适配器（默认，真库实测）
-    └── claude_code.py        # Claude Code 适配器（修改中/验证中：fixture 级验证通过，真实 CLI 会话验证待做，暂不宣传）
+session-fork/
+├── SKILL.md                    # 技能定义
+├── scripts/
+│   └── create_branch.py        # 唯一入口（AI 只需调用它）
+├── fork_core/                  # 通用引擎（与产品无关）
+│   ├── engine.py               # 截断点定位/截取/备份/验证/汇报
+│   ├── models.py               # SessionMeta / ForkResult 契约
+│   ├── cli.py                  # 命令行解析与输出
+│   ├── adapters.py             # adapter 注册表（工厂）
+│   ├── adapter_base.py         # TranscriptionAdapter 接口
+│   ├── adapter_workbuddy.py    # WorkBuddy 适配器（默认，真库实测）
+│   └── adapter_claude_code.py  # Claude Code 适配器（修改中/验证中：fixture 级验证通过，真实 CLI 会话验证待做，暂不宣传）
+└── tests/                      # 自测（开发用；`python3 tests/test_wb_adapter.py`）
 ```
+
+> **⚠️ 目录布局约束（勿破坏，2026-09-14 发布事故固化）**：WorkBuddy 开放平台要求技能包**最多两级目录**（根目录 / 二级目录 / 文件），三级及以上会被平台判「目录层级超限」而拒绝解析。因此 `fork_core/` 平铺在根目录、adapter 是同级模块而非 `adapters/` 子包。**新增产品支持 = 在 `fork_core/` 下新增 `adapter_<产品>.py`（并在 `adapters.py` 注册），不要新建子目录**。
 
 - 核心逻辑（默认/--match/--line/--request-id 定位、结构化 id 替换、完整性校验）全部在引擎层，与存储格式无关；
 - 每个产品只实现一个 adapter（4 组方法：定位/消息判定/读写/注册），格式差异被完全隔离；
@@ -50,7 +60,7 @@ fork_core/                    # 通用引擎（与产品无关）
 
 ## 触发条件
 
-用户**明确要求创建/执行**"打分支 / 会话分叉 / 复制对话 / 分支会话 / split session / fork session / 新建分支 / 从这里分叉"。
+用户**明确要求创建/执行**"打分支 / 会话分叉 / 对话分支 / **任务分叉** / 复制对话成新分支 / **把任务复制成新分支** / **同一个任务并行试几条路** / 分支会话 / split session / fork session / branch this task / 新建分支 / 从这里分叉"。
 
 **用户的唯一心智（技能只认这一条，无需用户理解内部概念）：**
 > **没贴 conversation ID → 打当前对话的分支；贴了 conversation ID（"复制请求 ID"的 JSON）→ 打那个对话的分支。**
@@ -254,6 +264,7 @@ MIT License — free to use, modify and redistribute with attribution.
 
 ## 更新日志
 
+- **v2.4.5** — 目录结构合规修复（WorkBuddy 开放平台要求技能包**最多两级目录**）：`fork_core/` 从 `scripts/` 提到根目录、`adapters/` 子包拉平为同级 `adapter_*.py` 模块、`tests/` 提到根目录——原 `scripts/fork_core/adapters/*.py` 为三级目录，上传平台会报「目录层级超限」而解析失败。同时修掉两个测试文件里硬编码的本机绝对路径（改为按 `__file__` 自定位，任何机器可直接跑），并把 `fork_core.egg-info`（构建残留）移出版本控制。
 - **v2.4.4** — 开放平台元数据合规（`display_name` / `display_name_en` / `description_zh` / `description_en`，双渠道 frontmatter 并存）；修复 `--verify` 分支校验误报（fork 后追加的消息里恰好出现源 id 时不再误判"残留"）——判定改为三层：① fork 前缀（按谱系快照点 `at_seq` 划界）任意字段从严；② 全文件 `sessionId` 结构性残留硬查（不依赖边界）；③ 快照点之后的追加区**只对工具/函数 I/O 字段宽容**（那里出现源 id 属对话内容，如 `ls` 输出里的同名目录），其余字段同样从严——所以即便 `at_seq` 记录偏小，"被跳过的那段"里的正文残留照样会被抓；另修复测试污染生产谱系索引（测试未隔离 `LINEAGE_PATH`）。
 - **v2.4.3** — L0 事务化：`tmp` 原子写 + 落位前校验 + 异常分层（`ForkError`/`ForkVerifyError`/`ForkRegisterError`/`ForkRollbackError`）+ `--dry-run` 走完整校验路径。
 - **v2.4.2** — 创建原子性：verify 前置到注册之前，校验失败不留半成品（db / 文件 / 谱系全干净）。

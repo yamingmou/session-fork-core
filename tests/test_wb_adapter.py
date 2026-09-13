@@ -4,10 +4,11 @@ import sqlite3
 import sys
 import tempfile
 
-sys.path.insert(0, "/Users/maxwell/.workbuddy/skills/session-fork/scripts")
+# 自定位：把技能根目录（本文件的上一级）加入模块搜索路径，任何机器都能直接跑
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import fork_core.adapters.workbuddy as wb_mod
-from fork_core.adapters.workbuddy import WorkBuddyAdapter
+import fork_core.adapter_workbuddy as wb_mod
+from fork_core.adapter_workbuddy import WorkBuddyAdapter
 from fork_core.models import SessionMeta
 
 # --- 临时 db + 临时 projects ---
@@ -309,7 +310,7 @@ import tempfile as _tf
 import fork_core.engine as _eng
 
 _atom_tmp = _tf.mkdtemp(prefix="wb-atom-")
-import fork_core.adapters.workbuddy as wb_mod2
+import fork_core.adapter_workbuddy as wb_mod2
 wb_mod2.DB_PATH = os.path.join(_atom_tmp, "workbuddy.db")
 wb_mod2.PROJECTS_DIR = os.path.join(_atom_tmp, "projects")
 wb_mod2.LINEAGE_PATH = os.path.join(_atom_tmp, "fork.lineage.json")
@@ -333,7 +334,7 @@ with open(os.path.join(wb_mod2.PROJECTS_DIR, "Users-x-test", _src+".jsonl"), "w"
 _orig_vb = _eng.verify_branch
 _eng.verify_branch = lambda *a, **k: ["forced failure"]
 from fork_core.engine import create_fork as _cf
-from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA
+from fork_core.adapter_workbuddy import WorkBuddyAdapter as _WBA
 _atom_a = _WBA()
 _try_fail = False
 try:
@@ -353,7 +354,7 @@ print("✓ 原子性: verify 失败不留半成品（db/文件/lineage 全干净
 # ============================================================
 # 14. register 失败回滚方向（撤 db 副作用，保留合格文件）v2.4.3
 # ============================================================
-import fork_core.adapters.workbuddy as _wb4
+import fork_core.adapter_workbuddy as _wb4
 _rb_tmp = _tf.mkdtemp(prefix="wb-roll-")
 _wb4.DB_PATH = os.path.join(_rb_tmp, "workbuddy.db")
 _wb4.PROJECTS_DIR = os.path.join(_rb_tmp, "projects")
@@ -374,7 +375,7 @@ with open(os.path.join(_wb4.PROJECTS_DIR, "Users-x-test", _rsrc+".jsonl"), "w") 
         {"type":"message","role":"assistant","sessionId":_rsrc,"content":[{"type":"output_text","text":"ok"}]},
         {"type":"message","role":"user","sessionId":_rsrc,"content":[{"type":"input_text","text":"打分支"}]},
     ]: f.write(json.dumps(l)+"\n")
-from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA3
+from fork_core.adapter_workbuddy import WorkBuddyAdapter as _WBA3
 _orig_reg2 = _WBA3.register_branch
 def _fake_reg2(self, src, new_id, dst_path, name, parent_id=None, at_seq=None):
     db = self._connect()
@@ -402,7 +403,7 @@ print("✓ 回滚方向: register 失败撤 db/谱系 + 回滚文件（干净回
 # ============================================================
 # 15. L0 事务化（焊死顺序 + dry-run 校验 + rollback 显式报错）v2.4.3
 # ============================================================
-import fork_core.adapters.workbuddy as _wb5
+import fork_core.adapter_workbuddy as _wb5
 _l0_tmp = _tf.mkdtemp(prefix="wb-l0-")
 _wb5.DB_PATH = os.path.join(_l0_tmp, "workbuddy.db")
 _wb5.PROJECTS_DIR = os.path.join(_l0_tmp, "projects")
@@ -423,7 +424,7 @@ with open(os.path.join(_wb5.PROJECTS_DIR, "Users-x-test", _lsrc+".jsonl"), "w") 
         {"type":"message","role":"assistant","sessionId":_lsrc,"content":[{"type":"output_text","text":"ok"}]},
         {"type":"message","role":"user","sessionId":_lsrc,"content":[{"type":"input_text","text":"打分支"}]},
     ]: f.write(json.dumps(l)+"\n")
-from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA4
+from fork_core.adapter_workbuddy import WorkBuddyAdapter as _WBA4
 from fork_core.engine import ForkVerifyError as _FVE, ForkRollbackError as _FRE
 
 # 15a. 焊死顺序：verify 失败时 register 零调用
@@ -500,7 +501,7 @@ print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树
 # 13. dry_run 不崩溃（回归：rewrite 移入 if 后 ForkResult 引用局部名）v2.4.3
 # ============================================================
 _dr_tmp = _tf.mkdtemp(prefix="wb-dry-")
-import importlib, fork_core.adapters.workbuddy as _wb3
+import importlib, fork_core.adapter_workbuddy as _wb3
 _wb3.DB_PATH = os.path.join(_dr_tmp, "workbuddy.db")
 _wb3.PROJECTS_DIR = os.path.join(_dr_tmp, "projects")
 _wb3.LINEAGE_PATH = os.path.join(_dr_tmp, "fork.lineage.json")
@@ -520,7 +521,7 @@ with open(os.path.join(_wb3.PROJECTS_DIR, "Users-x-test", _dsrc+".jsonl"), "w") 
         {"type":"message","role":"assistant","sessionId":_dsrc,"content":[{"type":"output_text","text":"ok"}]},
         {"type":"message","role":"user","sessionId":_dsrc,"content":[{"type":"input_text","text":"打分支"}]},
     ]: f.write(json.dumps(l)+"\n")
-from fork_core.adapters.workbuddy import WorkBuddyAdapter as _WBA2
+from fork_core.adapter_workbuddy import WorkBuddyAdapter as _WBA2
 _dr = _cf(_WBA2(), _dsrc, name="T", dry_run=True)  # 不应 UnboundLocalError
 assert _dr.ok and _dr.verified, "dry-run 应 ok 且 verified"
 assert _dr.cut == 2, "dry-run 应报截断点"

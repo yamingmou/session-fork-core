@@ -3,9 +3,10 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, "/Users/maxwell/.workbuddy/skills/session-fork/scripts")
+# 自定位：把技能根目录（本文件的上一级）加入模块搜索路径，任何机器都能直接跑
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fork_core.adapters.claude_code import ClaudeCodeAdapter
+from fork_core.adapter_claude_code import ClaudeCodeAdapter
 
 # --- 造模拟 Claude Code transcript ---
 tmpdir = tempfile.mkdtemp(prefix="cc-test-")
@@ -37,7 +38,7 @@ with open(path, "w") as f:
         f.write(json.dumps(l, ensure_ascii=False) + "\n")
 
 # 注入 CLAUDE_DIR 指向临时目录
-import fork_core.adapters.claude_code as cc_mod
+import fork_core.adapter_claude_code as cc_mod
 cc_mod.CLAUDE_DIR = tmpdir
 cc_mod.PROJECTS_DIR = os.path.join(tmpdir, "projects")
 cc_mod.BRANCH_INDEX = os.path.join(tmpdir, "fork.branches.json")
