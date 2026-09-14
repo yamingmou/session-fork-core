@@ -4,10 +4,10 @@ slug: session-fork
 displayName: 会话分叉（打分支）
 display_name: 会话分叉（打分支）
 display_name_en: Session Fork
-description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。基于 fork-core 通用引擎（Fork = Projection Derivative 投影派生），跨产品可用（WorkBuddy 适配器默认，Claude Code 等适配器验证中）。This skill should be used when the user asks to 打分支 / 会话分叉 / 对话分支 / 任务分叉 / 复制对话成新分支 / 把任务复制成新分支 / 并行试几条路 / split session / fork session / branch this conversation / branch this task / 以某条回复为界新建对话 / 把对话截断复制。典型指令："打分支，命名『论文讨论』"（默认截断到上一轮输出结束）或"打分支，从『…』那条回复作为拆分点，命名『…』"。
-description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。
-description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running.
-version: 2.4.5
+description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。当你说"打分支""会话分叉""把这个任务复制成新分支""以某条回复为界新建对话""并行试几条路""把对话截断复制"，或提到 fork this session / branch this task 时使用。底层为 fork-core 通用引擎，跨产品可用。
+description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。注意：分叉复制的是会话上下文，工作区产物不会跟着回退——除非产物自身有版本记录（如 git），否则只有当前最终态。
+description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running. Note that a fork copies the session context only; workspace artifacts are not rolled back — unless they are version-controlled (e.g. git), only their final state exists.
+version: 2.4.7
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, claude-code, session, fork, conversation, task, 会话分叉, 打分支, 任务分叉, 并行探索, 办公效率, 会话管理, 对话管理, 效率]
@@ -21,6 +21,28 @@ agent_created: true
 - **分叉对象 = 工作现场**（上下文 + 已确认结论 + 已做步骤 + 工具结果），**不是"聊天记录"**。因此对话、**任务**、方案、代码、写作、调研都可以分叉——用户说"把这个任务分个支""同一个任务并行试几条路"同样属于本技能职责，**不要以"这不是对话"为由拒绝或反问**。
 - **执行前后向用户交代的价值（一句话）**：不用重讲一遍背景、不用重跑一遍前面的步骤，原线也不会被带偏。
 - **默认行为**：截断点 = 上一轮输出的结束；用户一旦给出断点信息，必须改用 `--match` / `--line` / `--request-id`（见「工作流程 · Step 2」）。
+
+## ⚠️ 分叉边界：上下文会回去，产物不一定（必读）
+
+**分叉自由，产物不自由。** 分叉复制的是**会话的工作现场**（transcript 的 `1..截断点` 前缀，含工具结果的**记录文本**，不是把工具重跑一遍），外加会话索引 / 谱系登记——**它不复制、也不回退工作区文件，更不撤销任何已经发生的外部动作**。
+
+所以分支落地后可能出现这种错位：**分支里的上下文停在切点，而磁盘上的产物已经是"现在"的样子（最终态）**。产物能不能跟着回到那一刻，取决于它自己有没有版本记录：
+
+| 产物形态 | 能否回到那一刻 | 怎么做 |
+|---|---|---|
+| 在 git 仓库里（已提交） | ✅ 能 | 分支侧 `git switch -c <名> <sha>` 或 `git worktree add <目录> <sha>`，把工作区切到与切点对应的提交，上下文与产物重新对齐 |
+| 有版本记录的载体（云文档版本历史、系统快照 / Time Machine、备份、日志） | ✅ 通常能 | 手动回溯到对应时间点 |
+| 无任何版本记录的本地文件 | ❌ 只有最终态 | 分叉给到的是「旧上下文 + 新文件」；需要旧版本只能事先备份 |
+| 已发生的外部副作用（发出的消息 / 邮件、已发布页面、已 push 的提交、API 写入、装好的依赖） | ❌ 不可撤销 | 分叉不能取消已发生的事，需在外部自行补救 |
+
+**给 AI 的执行规则（打分支时执行，勿跳过）：**
+
+1. **每次打分支都用一句话交代边界**（一句话即可，不要长篇）：分叉的是会话上下文；工作区文件不会跟着回退，除非它在 git 等有版本记录的载体里。**不得**任何措辞暗示分叉能"时光倒流"；没把握时宁可说得保守。
+2. **动手前看一眼工作目录**（一条命令的事）：
+   - `git rev-parse --show-toplevel` 成功 → 是仓库：报告当前 `HEAD`（短 sha + 提交主题）并告知"分支侧可用 `git worktree` 对齐到切点"；若 `git status --porcelain` 非空，**明确提示这些未提交改动不会被分叉带走**；
+   - 失败/非仓库 → 明确告知**该目录下的文件只有当前最终态，分叉无法回退它们**。
+3. **用户真实意图是"回到旧产物"（而不只是"从旧上下文继续"）时，不要只打一个会话分支了事**——先建议（用户同意后执行）git 检查点（`commit` / `stash`）或文件备份，再分叉。
+4. 分支是**快照**：分叉点之后原会话新增的消息不会进分支——这是设计行为，向用户说明时不要误称为"丢数据"。
 
 ## 功能特性
 
@@ -52,8 +74,6 @@ session-fork/
 └── tests/                      # 自测（开发用；`python3 tests/test_wb_adapter.py`）
 ```
 
-> **⚠️ 目录布局约束（勿破坏，2026-09-14 发布事故固化）**：WorkBuddy 开放平台要求技能包**最多两级目录**（根目录 / 二级目录 / 文件），三级及以上会被平台判「目录层级超限」而拒绝解析。因此 `fork_core/` 平铺在根目录、adapter 是同级模块而非 `adapters/` 子包。**新增产品支持 = 在 `fork_core/` 下新增 `adapter_<产品>.py`（并在 `adapters.py` 注册），不要新建子目录**。
-
 - 核心逻辑（默认/--match/--line/--request-id 定位、结构化 id 替换、完整性校验）全部在引擎层，与存储格式无关；
 - 每个产品只实现一个 adapter（4 组方法：定位/消息判定/读写/注册），格式差异被完全隔离；
 - 未来新增产品支持 = 新增一个 adapter 文件，引擎零改动。
@@ -77,7 +97,7 @@ session-fork/
 | 只贴了 conversationRequestId / traceId | `fork --request-id <id>`（自动反查该 ID 所属会话，跨工作区） |
 | 说了文本/行号 | `fork --session current --match "XXX"` 或 `--line N` |
 
-> **⚠️ 铁律（2026-09-03 实战事故固化）**：用户给了**任何形式的引用**（@long-text 引用 / 复制的请求 ID JSON / 纯 requestId / 指向别处的会话内容）→ **源会话 = 引用所指的那个会话，严禁默认 `--session current` 打当前对话**。识别引用 ID：JSON 里找 `conversationId`，或 @引用内容里找 `"id": "<sessionId>-<requestId>"` 双段拼接格式。拿不准时先 `--dry-run` 展示将要打源会话名 + 断点，问用户确认再正式执行——**绝不反复试错创建分支**。
+> **⚠️ 铁律**：用户给了**任何形式的引用**（@long-text 引用 / 复制的请求 ID JSON / 纯 requestId / 指向别处的会话内容）→ **源会话 = 引用所指的那个会话，严禁默认 `--session current` 打当前对话**。识别引用 ID：JSON 里找 `conversationId`，或 @引用内容里找 `"id": "<sessionId>-<requestId>"` 双段拼接格式。拿不准时先 `--dry-run` 展示将要打源会话名 + 断点，问用户确认再正式执行——**绝不反复试错创建分支**。
 
 ### 排除（不触发执行，只回答问题）
 
@@ -142,7 +162,7 @@ session-fork/
 4. 最后登记 db 与谱系
 
 自检失败 = **什么都没发生**（只留可忽略的 .tmp）；登记失败 = 干净回退（文件回滚 + 痕迹清除）。
-**绝不允许**「先落 db 再验证」——那会让坏分支出现在侧边栏（v2.4.1 前真实事故源）。
+**绝不允许**「先落 db 再验证」——那会让坏分支出现在侧边栏。
 dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记）——`Verify: OK` 才是真 OK。
 
 **执行方式（三选一，跨平台）**：
@@ -169,6 +189,7 @@ fork --session current --adapter claude-code       # 其他产品（验证中，
 ```
 
 **执行规范**：
+- **先交代产物边界 + 看一眼工作目录的 git 状态**（见「分叉边界 · 给 AI 的执行规则」1/2）——这一步在**创建之前**做，别等用户发现产物没跟着回退再解释；
 - **先 `--dry-run` 确认截断点，再正式执行**（推荐，防打错位置）；
 - **`fork --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
 - 脚本自动完成备份 → 截取 → 会话 id 替换 → 注册 → 校验，无需手工介入。
@@ -217,7 +238,7 @@ fork --session current --adapter claude-code       # 其他产品（验证中，
 - `custom_title` 建议格式：`<主题>·分支X｜<用途>`，如 `DSH审计·分支C｜论文讨论`；
 - status 一律 `terminated`（无活跃 agent 的正常终态，不影响打开查看）。
 
-## 关键坑位（实战踩过）
+## 关键坑位
 
 1. **用户说了断点 → 必须用 --match/--line，绝对不能用默认模式**：默认模式找的是"最后一条 assistant 回复"（文件末尾），不是用户指定的中间位置。曾因用默认模式执行"截断到 XXX 产生处"的指令，导致分支包含了不该有的后续对话（多出 13-22 行），需要事后用 --fix 修复。
 2. **默认截断点 = 上一轮对话输出结束**：用户只说"打分支"没指定断点时，默认截到用户最后一条消息之前最后一条完整 assistant 回复的末尾（脚本默认模式自动定位，dry-run 验证即可）。
@@ -230,6 +251,7 @@ fork --session current --adapter claude-code       # 其他产品（验证中，
 
 ## 边界
 
+- **产物边界（最重要的一条，详见上文「分叉边界」）**：分叉只复制**会话上下文**，不回退**工作区文件**与**已发生的外部副作用**。会话可以分叉到任意节点，产物则只有在**自身有版本记录**（git 提交 / 云文档版本历史 / 快照备份）时才能对齐回切点；**没有记录的就只有最终态**。因此"回到过去"这件事，上限由产物的版本记录决定，不由分叉决定。
 - 本技能做的是**存储级复制**（新 jsonl 文件 + 会话索引新行记录），不是"链接/指向"——链接会让原会话后续写入污染分支，且无法表达"截断到某行为止"。
 - 分支创建后如需删除，由用户决定，不擅动。
 - 适配边界：只适配「会话 transcript 本地落盘、格式开放/稳定」的开发者工具（WorkBuddy 默认，Claude Code 验证中；C 端云优先 SaaS 如元宝/千问因本地无 transcript 不在范围）。
@@ -264,6 +286,8 @@ MIT License — free to use, modify and redistribute with attribution.
 
 ## 更新日志
 
+- **v2.4.7** — `description` 回归**读者本位**（它同时是模型的路由依据、也是 SkillHub 商品页「概述」的来源）。此前该字段被写成给模型看的触发契约（英文触发词清单 + `This skill should be used when…`），还混进了引擎与适配器状态（`fork-core` / `Projection Derivative` / 适配器验证进度）——于是平台上对外展示的简介读起来像实现文档。本版改写为：**价值与对象一句话开头 + 自然语言的触发场景**（保留全部触发词，仅去掉机器腔），实现细节一律归正文（`## 内部架构`）与 README。判定口径：**同一个字段服务于两个读者时，按"人先看懂"写，再把触发语嵌进人话句子**，不要用生态里的路由咒语句式。
+- **v2.4.6** — 补上一条被漏掉的能力边界：**会话可随意分叉，产物不一定**。分叉复制的是会话上下文，不复制也不回退工作区文件与已发生的外部副作用；产物只有在自身有版本记录（git 提交 / 云文档版本历史 / 快照备份）时才能对齐回切点，没有记录的就只有最终态。SKILL.md 新增「分叉边界」章（含四类产物判定表 + 4 条给 AI 的执行规则：创建前必须向用户交代边界、先探一次工作目录的 git 状态、用户意图是"回到旧产物"时先打检查点再分叉、快照行为不得说成"丢数据"），并在「边界」与「执行规范」处交叉引用。同时把仓库文档补成**中英双语**：`README.md`（中文，默认展示）+ `README.en.md`（英文），两页顶部互相切换，边界一节两种语言同权重呈现。
 - **v2.4.5** — 目录结构合规修复（WorkBuddy 开放平台要求技能包**最多两级目录**）：`fork_core/` 从 `scripts/` 提到根目录、`adapters/` 子包拉平为同级 `adapter_*.py` 模块、`tests/` 提到根目录——原 `scripts/fork_core/adapters/*.py` 为三级目录，上传平台会报「目录层级超限」而解析失败。同时修掉两个测试文件里硬编码的本机绝对路径（改为按 `__file__` 自定位，任何机器可直接跑），并把 `fork_core.egg-info`（构建残留）移出版本控制。
 - **v2.4.4** — 开放平台元数据合规（`display_name` / `display_name_en` / `description_zh` / `description_en`，双渠道 frontmatter 并存）；修复 `--verify` 分支校验误报（fork 后追加的消息里恰好出现源 id 时不再误判"残留"）——判定改为三层：① fork 前缀（按谱系快照点 `at_seq` 划界）任意字段从严；② 全文件 `sessionId` 结构性残留硬查（不依赖边界）；③ 快照点之后的追加区**只对工具/函数 I/O 字段宽容**（那里出现源 id 属对话内容，如 `ls` 输出里的同名目录），其余字段同样从严——所以即便 `at_seq` 记录偏小，"被跳过的那段"里的正文残留照样会被抓；另修复测试污染生产谱系索引（测试未隔离 `LINEAGE_PATH`）。
 - **v2.4.3** — L0 事务化：`tmp` 原子写 + 落位前校验 + 异常分层（`ForkError`/`ForkVerifyError`/`ForkRegisterError`/`ForkRollbackError`）+ `--dry-run` 走完整校验路径。
