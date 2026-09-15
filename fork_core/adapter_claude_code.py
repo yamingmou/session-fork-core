@@ -19,7 +19,14 @@ from .models import SessionMeta, VerifyItem
 from .adapter_base import TranscriptionAdapter
 
 HOME = os.path.expanduser("~")
-CLAUDE_DIR = os.path.join(HOME, ".claude")
+#: 根目录支持隔离：`CLAUDE_CONFIG_DIR` 是 Claude Code 官方认可的配置根覆盖变量
+#: （2026-09-14 真机验证：`strings` 命中 `CLAUDE_CONFIG_DIR`，且实测把整个 home
+#: 指到隔离目录后，会话确实落在 <隔离目录>/projects/<slug>/<id>.jsonl）。
+#: 与 Codex 的 `CODEX_HOME`、pi 的 `PI_AGENT_DIR` 同一条设计：**真机验证必须能隔离**，
+#: 否则要么不敢测、要么污染用户真实数据。
+#: ⚠️ 在**模块导入时**解析：CLI 的 adapter 是懒加载（get_adapter 时 import），
+#: 所以调用方只要在启动前 export 即可；已导入后再改环境变量不生效。
+CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 # 旁路分支索引（验证用，不写回 Claude Code 的 projects.json）
 BRANCH_INDEX = os.path.join(CLAUDE_DIR, "fork.branches.json")
@@ -224,6 +231,18 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
 
     def is_branch_name(self, title: str) -> bool:
         return True  # Claude 分支在旁路索引里显式记录，不需要标题启发式
+
+    # ------------------------------------------------------------------
+    # G. 面向用户的文案与路径（覆盖基类的 WorkBuddy 默认口径）
+    # ------------------------------------------------------------------
+    def activation_hint(self) -> str:
+        return "在终端重新运行 claude，用 /resume 选择该会话即可（无需重启其他程序）"
+
+    def produce_hint(self) -> str:
+        return "在终端跑一次 claude 命令（会话存到 ~/.claude/projects/）"
+
+    def backups_dir(self) -> str:
+        return self._backups_root(os.path.join(CLAUDE_DIR, "fork-backups"))
 
     def verify_storage(self) -> list[VerifyItem]:
         """存储层体检：~/.claude/projects/ 存在性 + 真实会话数。

@@ -4,7 +4,7 @@
 
 [![Version](https://img.shields.io/github/v/release/yamingmou/session-fork-core?label=version)](https://github.com/yamingmou/session-fork-core/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-WorkBuddy-blue.svg)](https://open.workbuddy.cn/)
+![Platforms](https://img.shields.io/badge/platforms-WorkBuddy%20%7C%20Claude%20Code%20%7C%20Codex%20%7C%20Hermes%20%7C%20pi%20%7C%20OpenClaw-blue.svg)
 [![Python](https://img.shields.io/badge/python-3.9%2B-informational.svg)](https://www.python.org/)
 
 **走到一半想换个方向，又不想把前面重来一遍？**
@@ -19,8 +19,12 @@ Session Fork 把当前这段工作**整体复制**出一个独立分支——上
 - 「同一个任务，想并行试两三条路」→ 各开一条平行线分别展开，最后挑一条；
 - 「前半段已经定了，别动它」→ 分支是独立副本（不是链接指向），原线后续怎么变都不会串进来。
 
-- 当前支持：**WorkBuddy**（打分支技能）；跨平台适配器开发中
-- 版本：2.4.7 · 作者：OfferKuai（Offer快）团队 · License：MIT
+- 当前支持（**6 个产品，全部真机实测**）：**WorkBuddy**（默认，真库实测）· **Claude Code**（真机实测）· **Codex**（真机实测）· **Hermes**（真机实测）· **pi**（真机实测）· **OpenClaw**（真机实测，两个世代都支持）
+- OpenClaw 两种世代已分别验证：`≤2026.6.x`（JSONL）与 `≥2026.9.x`（SQLite 的 `transcript_events` 表，与 JSONL 同构）——引擎产出的分支都被 OpenClaw 自己列出并能继续对话
+- 不在范围：本地不留转录的云优先服务
+- 作者：OfferKuai（Offer快）团队 · License：MIT
+- 版本：**以顶部 Release 徽章为准**（此处不手写——手写必与 tag 漂移）
+- **变更历史**：见 [CHANGELOG.md](CHANGELOG.md)——每版按「价值 / 实现 / 修改 / 检查」四段写，"检查"给的是**你可以自己复核**的方式
 
 ## 分叉的是什么——以及不是什么
 
@@ -51,32 +55,30 @@ Session Fork 把当前这段工作**整体复制**出一个独立分支——上
 
 ## 安装
 
-### WorkBuddy 用户（推荐）
+**先看你在用哪个产品**（上面列了 6 个），再选对应的一条。**三种入口的参数完全一致——唯一例外：非 WorkBuddy 用户必须补 `--adapter <你的产品>`。**
 
-在 **WorkBuddy 开放平台**技能市场搜索「会话分叉」安装（https://open.workbuddy.cn/ ），或：
+| 你在用 | 怎么装 | 装完在哪 | 怎么用 |
+|---|---|---|---|
+| **WorkBuddy** | 开放平台技能市场搜「会话分叉」；或 `skillhub install session-fork --namespace user_5b43da63`；或在 [SkillHub](https://skillhub.cn) 搜 `session-fork` | `~/.workbuddy/skills/session-fork/` | 直接对 WorkBuddy 说「打分支，命名『…』」 |
+| **Claude Code / Codex / Hermes / pi / OpenClaw** | **不用装"技能"**：`pip install git+https://github.com/yamingmou/session-fork-core.git`（或 `git clone`） | 你本机，任意目录 | `fork --adapter <产品> --session current --name "<分支名>"` |
+| **只想当命令行工具**（默认操作 WorkBuddy） | 同上 | 你本机 | `fork --session current --name "<分支名>"` ⚠️ **非 WorkBuddy 用户必须补 `--adapter <你的产品>`**，否则命令会落到 WorkBuddy 的会话库 |
 
-```bash
-skillhub install session-fork --namespace user_5b43da63
-```
+> **非 WorkBuddy 用户要点**
+> ① 不需要 WorkBuddy，也**不需要把文件放进任何"技能目录"**——它就是一个 Python 命令行工具；
+> ② 用 `--adapter` 指定你在用的产品；各产品的会话库位置**自动探测**，也可用环境变量覆盖（如 `CODEX_HOME` / `HERMES_HOME`）；
+> ③ 下面命令行示例里的 `fork`，就是 `pip install` 装出来的那个命令。
 
-也可在 [SkillHub 官网](https://skillhub.cn) 搜索 `session-fork` 安装。
-
-### 命令行（pip，跨平台）
-
-```bash
-pip install git+https://github.com/yamingmou/session-fork-core.git
-fork --version
-```
-
-### GitHub 源码（任意目录）
+<details>
+<summary>GitHub 源码方式（开发 / 自测用）</summary>
 
 ```bash
 git clone https://github.com/yamingmou/session-fork-core.git
 python3 <clone目录>/scripts/create_branch.py --session current
 
-# 自测（开发用）
+# 自测
 python3 <clone目录>/tests/test_wb_adapter.py
 ```
+</details>
 
 ## 使用
 
@@ -88,6 +90,10 @@ python3 <clone目录>/tests/test_wb_adapter.py
 - 想并行试几条路 → 同一段工作连打两条分支，各命名、各走各的。
 
 ### 命令行
+
+> **读法约定**：为简洁，下面用 `fork` 代表命令入口。
+> **通过技能市场安装的人没有 `fork` 这个命令**（它是 `pip install` 之后才有的别名）——请把它换成完整路径：
+> `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py`。**两者参数完全一致。**
 
 ```bash
 # 打当前对话的分支（默认截断到上一轮输出结束）
@@ -106,6 +112,18 @@ fork --list
 fork --list --tree
 ```
 
+### 实际输出长这样
+
+截断点、产物 id、校验结论一目了然——**不确认就不落盘**：
+
+```text
+Source   : <源会话 id>   (…/projects/<工作区>/<源会话 id>.jsonl)
+Split    : line 76 / 76  (default (previous turn's output end))
+Branch   : <新会话 id>   name='论文讨论'
+Verify   : ✅ OK (6 lines, sessionId consistent, zero residue, tail complete)
+DRY RUN — nothing written.        # 仅 --dry-run 时出现；不加则真正落盘
+```
+
 ## 工作原理
 
 打分支是一次**存储级复制**：取源会话 transcript 的第 `1..截断点` 行 → 递归改写其中的会话 id → 写成新的会话文件 → 在会话索引与谱系索引里登记。源会话零改动。
@@ -114,20 +132,15 @@ fork --list --tree
 
 ```
 session-fork/
-├── SKILL.md                    # 技能定义
-├── scripts/create_branch.py    # 唯一入口
-├── fork_core/                  # 与产品无关的引擎
-│   ├── engine.py               # 截断点定位 / 截取 / 备份 / 校验
-│   ├── models.py               # SessionMeta / ForkResult 契约
-│   ├── cli.py                  # 命令行解析与输出
-│   ├── adapters.py             # adapter 注册表（工厂）
-│   ├── adapter_base.py         # TranscriptionAdapter 接口
-│   ├── adapter_workbuddy.py    # WorkBuddy 适配器（默认，真库实测）
-│   └── adapter_claude_code.py  # Claude Code 适配器（开发中）
+├── SKILL.md                    # 技能定义（给 AI 读的操作说明）
+├── scripts/create_branch.py    # 唯一入口 ← 只跑这个
+├── fork_core/                  # 引擎 + 各产品适配器
 └── tests/                      # 自测（开发用）
 ```
 
-新增一个产品支持 = 新增一个 `adapter_<产品>.py`，引擎零改动。
+**支持哪些产品看上面「当前支持」**；`fork_core/` 的内部结构属开发者文档，不影响使用——
+**请不要绕过入口直接执行里面的模块**（唯一入口是 `scripts/create_branch.py`）。
+新增一个产品支持 = 新增一个 `adapter_<产品>.py`，引擎零改动（旧适配器也不需要改动）。
 
 ## 相关链接
 

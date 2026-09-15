@@ -16,7 +16,8 @@ import uuid
 from .adapter_base import TranscriptionAdapter
 from .models import ForkResult, SessionMeta, VerifyItem
 
-# 备份目录默认 ~/.workbuddy/backups（可通过环境变量覆盖）
+# 备份目录默认 ~/.workbuddy/backups（历史默认值）。CLI 路径实际取 adapter.backups_dir()，
+# 可用环境变量 FORK_BACKUP_DIR 覆盖（见 adapter_base.TranscriptionAdapter.backups_dir）。
 DEFAULT_BACKUPS_DIR = os.path.join(os.path.expanduser("~"), ".workbuddy", "backups")
 
 
@@ -110,8 +111,11 @@ def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None
         if cand is None:
             raise ForkError(
                 f"request_id not found in any assistant reply: {request_id!r}\n"
-                "  Hint: 该请求 ID 可能属于其他会话/工作区——复制 JSON 里 conversationId 即源会话 ID，"
-                "用 --session <conversationId> 指定（或用 --request-id 自动反查源会话）"
+                f"  Hint 1（最常见）：若 {request_id!r} 其实是**一段文字**（用户说"
+                f"「从『…』那条回复开始打分支」），那它不该进 --request-id，而该进 --match：\n"
+                f"      … scripts/create_branch.py --session current --match \"{request_id}\"\n"
+                "  Hint 2：若它确为请求 ID，则可能属于其他会话/工作区——复制 JSON 里 conversationId "
+                "即源会话 ID，用 --session <conversationId> 指定（或用 --request-id 自动反查源会话）"
             )
     elif line_no is not None:
         cand = line_no
@@ -158,7 +162,7 @@ def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) ->
     ——与替换引擎策略一致：黑名单字段保留旧 id 是合法设计，不误报。
     """
     errs = []
-    raw = open(dst_path, encoding="utf-8").read()
+    raw = adapter.read_raw(dst_path)
     check = [l for l in raw.splitlines() if l.strip()]
     parsed: list[dict] = []
     last_parse_failed = False
@@ -204,17 +208,15 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, b
     误判成残留（2026-09-14 修复）。
     """
     found: list[tuple[str, str]] = []
-    projects = getattr(adapter, "PROJECTS_DIR", None)
-    if not projects or not os.path.isdir(projects):
-        return found
-    for slug in os.listdir(projects):
-        p = os.path.join(projects, slug)
-        if not os.path.isdir(p):
-            continue
-        for fn in os.listdir(p):
-            if fn.endswith(".jsonl"):
-                found.append((os.path.join(p, fn), fn[:-6]))
-    found.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
+    # 会话枚举交给 adapter：文件名≠会话 id 的产品（pi 是 <时间戳>_<id>.jsonl）必须自行覆盖，
+    # 否则引擎会把文件名当 id（2026-09-14 跨平台验证修复）。
+    try:
+        found = list(adapter.list_all_sessions())
+    except Exception:
+        found = []
+    # 排序键交给 adapter：SQLite 后端的转录引用不是文件路径，os.path.getmtime 会崩
+    # （2026-09-14 跨平台验证修复；这是第三处被暴露的"转录=文件"隐含假设）
+    found.sort(key=lambda x: adapter.sort_key(x[0]), reverse=True)
 
     # 分支集合 + parent 映射 + 快照点（从旁路谱系索引；_lineage_get 返回 {fork_id: {...}}）
     # parent_id 为空的一律**不算分支**：空串会让 `old_id in v` 恒真 → 全字段误判污染
@@ -276,7 +278,7 @@ def _find_residue(objs: list[dict], old_id: str, raw_keys: set, start: int = 1) 
     return hits
 
 
-def _find_structural_residue(objs: list[dict], old_id: str) -> list[str]:
+def _find_structural_residue(objs: list[dict], old_id: str, adapter=None) -> list[str]:
     """结构性残留：old_id 出现在**会话关联字段**（`sessionId` / `session_id`）的值上
     ——**不依赖任何行边界**。
 
@@ -299,9 +301,13 @@ def _find_structural_residue(objs: list[dict], old_id: str) -> list[str]:
     def walk(node, path):
         if isinstance(node, dict):
             for k, v in node.items():
-                if k in _SESSION_ID_KEYS and isinstance(v, str) and old_id in v:
-                    hits.append(f"{path}.{k}" if path else k)
-                walk(v, f"{path}.{k}" if path else k)
+                full = f"{path}.{k}" if path else k
+                # adapter 可声明某些路径下的会话关联字段是**历史记录**而非关联字段
+                # （例：OpenClaw 的 custom 条目 data.sessionId 记录"该 run 发生在哪个会话"）。
+                exempt = bool(adapter is not None and adapter.is_historical_id_path(full))
+                if not exempt and k in _SESSION_ID_KEYS and isinstance(v, str) and old_id in v:
+                    hits.append(full)
+                walk(v, full)
         elif isinstance(node, list):
             for i, v in enumerate(node):
                 walk(v, f"{path}[{i}]")
@@ -351,14 +357,14 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
     if not real:
         items.append(VerifyItem(
             "真实数据替换验证", "L1", False,
-            "无真实会话可用（仅 fixture 级）。请先用产品产生会话：WorkBuddy 直接对话 / Claude Code 在终端跑 claude 命令",
+            "无真实会话可用（仅 fixture 级）。请先用产品产生会话：" + adapter.produce_hint(),
         ))
     else:
         raw_keys = getattr(adapter, "_RAW_KEYS", set())
         n_src = sum(1 for r in real if not r[2])
         n_br = len(real) - n_src
         for path, sid, is_branch, parent_id, at_seq in real:
-            lines = _load_lines(path)
+            lines = adapter.read_lines(path)
             if not lines:
                 items.append(VerifyItem(f"真实数据验证 {sid[:8]}", "L2", False, "transcript 为空或不可读"))
                 continue
@@ -370,7 +376,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 #      是合法对话内容——真实案例：追加的 `ls` 输出里恰好有个目录叫源会话 UUID），
                 #      其余字段（如消息正文 content[].text）出现源 id 仍判污染。
                 # ③ 是关键：它让"at_seq 记录偏小、跳过了真实前缀的一段"不再**静默漏检**——
-                # 被跳过的部分若含非工具字段残留，一样会被抓（2026-09-14 第二轮独立审查）。
+                # 被跳过的部分若含非工具字段残留，一样会被抓（2026-09-14 第二轮复核）。
                 # 即：边界只决定"哪一段算前缀"，不决定"是否检查"。
                 boundary = at_seq if isinstance(at_seq, int) and at_seq > 0 else None
                 if boundary is not None and (
@@ -396,7 +402,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 # 宽容只在"追加区确实开启新回合"时生效：合法追加必然是一条新的 user 回合
                 # （两个真实分支实测：L(at_seq+1) 都是 user 消息）。若边界后紧跟的不是 user
                 # 消息，这段更像"被错误放大成追加区的前缀"——此时一律从严，宁可误报，
-                # 也不让 at_seq 记录偏小借宽容掩盖真污染（2026-09-14 第三轮独立审查）。
+                # 也不让 at_seq 记录偏小借宽容掩盖真污染（2026-09-14 第三轮复核）。
                 tail_is_new_turn = (
                     len(lines) > boundary and adapter.is_user_message(lines[boundary])
                 )
@@ -404,7 +410,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                     p for p in tail_hits
                     if not (tail_is_new_turn and _is_tool_io_path(p))
                 ]
-                structural = _find_structural_residue(lines, parent_id)
+                structural = _find_structural_residue(lines, parent_id, adapter)
 
                 bad = prefix_hits + tail_hard + structural
                 ok = not bad
@@ -434,7 +440,25 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 try:
                     cut, total = locate_last_reply(adapter, lines)
                 except ForkError as e:
-                    items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
+                    # 无任何完整 assistant 回复的会话**不是**适配器缺陷，而是产品侧
+                    # 真实存在的形态：回合被中断/模型调用失败/纯注入会话。
+                    # Codex 真机实测即有此例（`codex exec fork` 因上游 502 中断，
+                    # transcript 里有 user 与元信息、无 assistant）。
+                    # 这类会话既不能截断也无从验证 → 记为"跳过"，不计入失败，
+                    # 否则体检会把环境噪声报成适配器回归（2026-09-14 真机发现）。
+                    # 判据从严：只有**一条 assistant 回复都没有**才跳过；有回复却定位失败
+                    # 依旧是硬失败（那是真的定位逻辑问题）。
+                    has_reply = any(
+                        adapter.is_assistant_message(o) and adapter.get_text(o).strip()
+                        for o in lines
+                    )
+                    if has_reply:
+                        items.append(VerifyItem(f"截断定位 {sid[:8]}", "L2", False, str(e)))
+                    else:
+                        items.append(VerifyItem(
+                            f"截断定位 {sid[:8]}", "L2", True,
+                            "跳过：该会话无任何完整 assistant 回复（回合中断/调用失败），不参与 L2 抽查",
+                        ))
                     continue
                 # 源会话：模拟 rewrite，验证引擎替换能力
                 new_id = "verify-" + uuid.uuid4().hex[:12]
@@ -445,7 +469,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 if residue:
                     detail += f"，残留 {len(residue)} 处：{residue[:3]}"
                 items.append(VerifyItem(f"真实数据替换 {sid[:8]}", "L2", ok, detail))
-        # 汇总项 ok = 本轮所有真实数据检查项都通过（不硬编码绿，2026-09-03 审计）
+        # 汇总项 ok = 本轮所有真实数据检查项都通过（不硬编码绿，2026-09-03 复核）
         data_items = [it for it in items if it.name.startswith(("真实数据替换", "分支产物校验", "截断定位"))]
         all_ok = bool(data_items) and all(it.ok for it in data_items)
         items.append(VerifyItem(
@@ -497,14 +521,20 @@ def create_fork(
     src_id = adapter.resolve_session(session_ref)
     transcript, slug = adapter.find_transcript(src_id)
     if not transcript:
-        raise ForkError(f"Transcript not found for {src_id}")
+        raise ForkError(
+            f"Transcript not found for {src_id!r}\n"
+            f"  Hint 1（最常见）: 若 {src_id!r} 其实是**一段文字**而不是会话 ID，"
+            f"那它不该进 --session，而该进 --match：\n"
+            f"      … scripts/create_branch.py --session current --match \"{src_id}\"\n"
+            "  Hint 2: 若它确为会话 ID，请确认该会话属于当前工作区（跨工作区需用对应的 --adapter）。"
+        )
 
     src_meta = adapter.load_session_meta(src_id)
     if src_meta is None:
         # 有些产品无索引（纯文件），用最小 meta
         src_meta = SessionMeta(id=src_id, cwd=slug or "")
 
-    lines = _load_lines(transcript)
+    lines = adapter.read_lines(transcript)
     if not lines:
         raise ForkError(f"Transcript is empty or unreadable: {transcript}")
 
@@ -527,14 +557,14 @@ def create_fork(
     backup_dir = None
     truncated = lines[:cut]
     truncated, replacements = adapter.rewrite_ids(truncated, src_id, new_id)
-    dst = os.path.join(os.path.dirname(transcript), new_id + ".jsonl")
+    dst = adapter.branch_target(transcript, new_id)
     # L0 原子写（2026-09-04 事务化改造）：先写 .tmp（不被侧边栏扫、不在 db → 零外部可见副作用），
     # verify 校验 tmp 的磁盘字节；通过才 os.replace 落位（原子，无中间态）。
     # 自检失败/中途异常 = 只留 tmp 垃圾文件（无害）——回滚不依赖删除（L0 优于 L1）。
     tmp = f"{dst}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
     try:
         if not dry_run:
-            backup_dir = backup_source(transcript, backups_dir)
+            backup_dir = adapter.backup_transcript(transcript, backups_dir)
         adapter.write_branch(tmp, truncated)
         try:
             errs = verify_branch(adapter, tmp, new_id, cut, src_id)
@@ -561,7 +591,7 @@ def create_fork(
             raise ForkVerifyError(errs)
 
         # ── 文件落位（第一个"发布"动作；失败态优先对准孤儿文件侧）──
-        os.replace(tmp, dst)
+        adapter.finalize_branch(tmp, dst)
         # 读锁不再自动加（v1.4.0 起提示用户手动 chmod 444），此处只负责落位
 
         # ── 登记（db + lineage；内部顺序见 adapter，外层只做补救）──

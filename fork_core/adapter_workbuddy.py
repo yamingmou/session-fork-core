@@ -59,7 +59,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         return row[0]
 
     def find_transcript(self, session_id: str) -> tuple[os.PathLike | None, str | None]:
-        # 安全校验（2026-09-03 二轮审计）：拒绝路径穿越——session id 只允许文件名字符，
+        # 安全校验（2026-09-03 复核）：拒绝路径穿越——session id 只允许文件名字符，
         # 且解析后的路径必须落在 PROJECTS_DIR 内
         if not session_id or "/" in session_id or "\\" in session_id or session_id in (".", ".."):
             return None, None
@@ -82,7 +82,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         用户从 UI "复制请求 ID" 后只想打分支，不知道源会话 id——脚本自动定位。
         conversationId（复制 JSON 里）== 会话文件名 id，全盘搜 providerData 命中即可。
 
-        歧义处理（2026-09-03 独立审查发现）：分支复制会继承源会话的 request id
+        歧义处理（2026-09-03 复核发现）：分支复制会继承源会话的 request id
         （rewrite 只换 sessionId 不剥离 conversationRequestId）——若命中的最新文件是
         分支，会把 request-id 解析到后代分支而非源会话 → 谱系错乱。
         解决：收集全部命中，优先返回**非分支**（源会话）；仅当全部命中都是分支时才返回分支。
@@ -309,7 +309,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
 
     def _lineage_write(self, data: dict) -> None:
         os.makedirs(os.path.dirname(LINEAGE_PATH), exist_ok=True)
-        # 原子写（2026-09-03 审计）：先写临时文件再 os.replace，避免并发/中断留半文件
+        # 原子写（2026-09-03 复核）：先写临时文件再 os.replace，避免并发/中断留半文件
         tmp = LINEAGE_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

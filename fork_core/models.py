@@ -47,9 +47,8 @@ class ForkResult:
     replacements: int = 0
     dry_run: bool = False
     verified: bool = False
-    # P2-1 预留（2026-09-08 fork 线核对 comm-093 规格 3.2）：
-    # 承载"降级路径"标记——当前实现天然为规格层②（git/文件级兜底，无官方 API 可调），
-    # 恒 False；待层①（DSH 官方 fork API adapter）出现后，降级时置 True（降级可见律）。
+    # 降级路径标记（预留）：当前实现天然走"文件级兜底"（无官方 API 可调），恒 False；
+    # 若将来出现产品官方的 fork API，一旦走降级路径即置 True，让"降级"对外可见。
     degraded: bool = False
 
 

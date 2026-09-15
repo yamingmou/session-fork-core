@@ -12,7 +12,10 @@
 所有方法都接收 engine 传入的上下文，不依赖全局状态。
 """
 
+import json
 import os
+import shutil
+import time
 from typing import Any, Optional
 
 from .models import SessionMeta, VerifyItem
@@ -66,9 +69,10 @@ class TranscriptionAdapter:
     # ------------------------------------------------------------------
     # C. 读写
     # ------------------------------------------------------------------
-    def read_lines(self, path: str) -> list[dict]:
-        """读 jsonl → list[dict]。"""
-        raise NotImplementedError
+    # ⚠️ `read_lines` **只在本文件底部「H. 行存储抽象」定义一次**（默认实现 = 逐行 JSON 文件）。
+    #    这里曾有一份 `raise NotImplementedError` 的接口桩，与下方同名同签名 ⇒ 被**静默覆盖**，
+    #    读者会误以为"改了这个桩就能改行为"（实际不会）。已删除该桩（2026-09-15 复核）。
+    #    `write_branch` / `rewrite_ids` 等仍按原样在本节声明。
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
         """把分支行写入文件（引擎已处理好截断与 id 替换）。"""
@@ -136,3 +140,153 @@ class TranscriptionAdapter:
             str(projects) if ok else "缺失（无会话存储）",
         ))
         return items
+
+    # ------------------------------------------------------------------
+    # F. 会话枚举（可选覆盖；引擎真库体检 _collect_real_transcripts 用）
+    # ------------------------------------------------------------------
+    def storage_root(self) -> Optional[str]:
+        """存储根目录（其下按 workspace 分子目录、子目录里放 *.jsonl）。
+
+        默认取 PROJECTS_DIR（WorkBuddy / Claude Code 的形态）。
+        存储布局不同的产品覆盖本方法，勿让引擎去猜属性名
+        （2026-09-14 跨平台验证：引擎原先硬取 PROJECTS_DIR，pi 的 SESSIONS_DIR 取不到，
+        导致真库体检恒报"无真实会话可用"）。
+        """
+        return getattr(self, "PROJECTS_DIR", None)
+
+    def list_all_sessions(self) -> list[tuple[str, str]]:
+        """枚举全部真实会话 → [(transcript_path, session_id)]。
+
+        默认实现假定**文件名去掉 .jsonl 即会话 id**（WorkBuddy / Claude Code 成立）。
+
+        ⚠️ 文件名与会话 id 解耦的产品必须覆盖本方法：pi 的文件名是
+        `<ISO 时间戳>_<header.id>.jsonl`，会话 id 在**首行 header** 里。
+        沿用默认实现会把时间戳前缀算进 id，使残留校验（拿错 id 去比对）
+        与分支识别全部失真（2026-09-14 跨平台验证实测）。
+        """
+        out: list[tuple[str, str]] = []
+        root = self.storage_root()
+        if not root or not os.path.isdir(root):
+            return out
+        for slug in os.listdir(root):
+            d = os.path.join(root, slug)
+            if not os.path.isdir(d):
+                continue
+            for fn in os.listdir(d):
+                if fn.endswith(".jsonl"):
+                    out.append((os.path.join(d, fn), fn[:-6]))
+        return out
+
+    # ------------------------------------------------------------------
+    # G. 面向用户的文案与路径（可选覆盖；默认 = WorkBuddy 口径，兼容旧行为）
+    # ------------------------------------------------------------------
+    def activation_hint(self) -> str:
+        """分支落地后如何让产品"看见"它（各产品刷新机制不同）。
+
+        默认返回 WorkBuddy 的运行期提示（重启客户端）。
+        覆盖示例见 adapter_pi.activation_hint（pi 无需重启，/resume 即可见）。
+        """
+        return (
+            "会话列表非实时刷新，需重启对应产品才能在左侧看到\n"
+            "            macOS: ⌘Q 退出重开，或终端执行 open -a WorkBuddy"
+        )
+
+    def produce_hint(self) -> str:
+        """体检发现"无真实会话"时，告诉用户怎么先产生一个会话。"""
+        return "WorkBuddy 直接对话 / Claude Code 在终端跑 claude 命令"
+
+    def _backups_root(self, default: str) -> str:
+        """备份根目录的**统一取值规则**：环境变量 FORK_BACKUP_DIR 优先，否则用传入的产品目录。
+
+        各 adapter 的 `backups_dir()` 都应经这里取值（否则用户设了环境变量却不生效）。
+        非 WorkBuddy 用户不希望备份落在产品自己的目录里时，用它统一改到别处。
+        """
+        override = os.environ.get("FORK_BACKUP_DIR")
+        return os.path.expanduser(override) if override else default
+
+    def backups_dir(self) -> str:
+        """源文件备份目录。默认 ~/.workbuddy/backups（历史默认值，勿改）。
+
+        各产品通常覆盖为**自己产品目录下的 `fork-backups/`**（claude-code / codex /
+        hermes / pi / openclaw 都如此）——备份跟着产品走，不污染别家目录。
+        想要统一指定时用环境变量 **FORK_BACKUP_DIR**（对所有 adapter 生效）。
+        """
+        return self._backups_root(os.path.join(os.path.expanduser("~"), ".workbuddy", "backups"))
+
+    # ------------------------------------------------------------------
+    # H. 行存储抽象（v2.4.8 新增；默认实现 = 「一行一条 JSON 的文本文件」）
+    #
+    # 引擎原本直接对文件做 read / os.replace，隐含了"转录 = 文本文件"这个前提。
+    # 而 OpenClaw ≥2026.9.x 把转录放进了 SQLite 的 transcript_events 表
+    # （(session_id, seq) → event_json）——**语义与 JSONL 完全同构，只是介质不同**。
+    # 下面几个方法把「介质」从引擎里抽出来：
+    #   - 转录引用（ref）是不透明字符串：JSONL 后端 = 文件路径；
+    #     SQLite 后端 = "<db 路径>#<session_id>" 形式的合成引用。
+    #   - 默认实现严格保持既有 JSONL 行为，**旧适配器零改动**。
+    # ------------------------------------------------------------------
+    def read_lines(self, ref: str) -> list[dict]:
+        """按 ref 读出有序条目序列。默认：逐行 JSON 文件。"""
+        out = []
+        with open(ref, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    out.append(json.loads(line))
+        return out
+
+    def read_raw(self, ref: str) -> str:
+        """读出可做行级校验的原始文本。默认：文件内容原样。
+
+        SQLite 后端返回与 JSONL 等价的「每行一条 JSON」文本，
+        使引擎现有的行数 / 解析 / 残留校验逻辑可原样复用。
+        """
+        with open(ref, encoding="utf-8") as f:
+            return f.read()
+
+    def branch_target(self, src_ref: str, new_id: str) -> str:
+        """算产物引用。默认：与源同目录的 <new_id>.jsonl。"""
+        return os.path.join(os.path.dirname(src_ref), new_id + ".jsonl")
+
+    def finalize_branch(self, tmp_ref: str, dst_ref: str) -> None:
+        """把「已校验但尚未对外可见」的产物落位（引擎的第一个发布动作）。
+
+        默认：原子 rename（JSONL）。SQLite 后端：COMMIT 事务。
+        """
+        os.replace(tmp_ref, dst_ref)
+
+    def backup_transcript(self, ref: str, backups_dir: str) -> str:
+        """备份源。默认：复制单个文件。SQLite 后端应备份整个数据库文件。"""
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        backup_dir = os.path.join(backups_dir, ts)
+        os.makedirs(backup_dir, exist_ok=True)
+        shutil.copy2(ref, os.path.join(backup_dir, os.path.basename(ref)))
+        return backup_dir
+
+    def is_historical_id_path(self, path: str) -> bool:
+        """该路径下的 `sessionId`/`session_id` 是否属**历史记录**而非会话关联字段。
+
+        默认 False（一律按关联字段查）。只有确实存在"产品会把源会话 id 写进
+        历史记录"的情形才覆盖——覆盖面越小越好，这是纵深防御层的豁免口。
+        """
+        return False
+
+    def sort_key(self, ref: str) -> float:
+        """体检时的"最近使用"排序键。默认：文件 mtime。
+
+        SQLite 后端的 ref 不是文件路径，必须覆盖（否则 getmtime 抛 FileNotFoundError）。
+        """
+        return os.path.getmtime(ref)
+
+    def publish_hint(self) -> str:
+        """产物落位后，是否还需要额外动作才能被产品看见（不需要 = 空串）。"""
+        return ""
+
+    def backup_note(self) -> str:
+        """备份范围的一句话说明（给用户看，各介质不同）。"""
+        return "source jsonl only, no database copy"
+
+    def readonly_hint(self, dst_ref: str) -> str:
+        """防止产品继续往分支追加消息的提示（无文件可锁的介质返回空串）。"""
+        return (
+            "分支文件未锁定只读。如需防止主进程追加消息，请手动执行："
+            f"chmod 444 {dst_ref}"
+        )

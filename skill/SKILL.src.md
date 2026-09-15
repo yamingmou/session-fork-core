@@ -99,16 +99,16 @@ session-fork/
 > **用户只是在说文字**（哪怕他说的是"那条**回复**"）→ 用 **`--match "<那段文字>"`**。
 > ⚠️ `--request-id` **只能装 ID**，不能装文字。
 
-> **⛔ 动手前先做这一件事**：下面的命令**统一写成 WorkBuddy 形式**（`python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py …`）。**若你不在 WorkBuddy 里**，先读「**Step 0 · 先判定你在哪个产品里**」，把前缀换成 `fork`（pip 渠道）或你所在产品的技能目录路径，**并补上 `--adapter <你的产品>`**——其余参数完全相同。
+<!--WBS:-->> **⛔ 动手前先做这一件事**：下面的命令**统一写成 WorkBuddy 形式**（`{{FORK}}{{ADAPTER}} …`）。**若你不在 WorkBuddy 里**，先读「**Step 0 · 先判定你在哪个产品里**」，把前缀换成 `fork`（pip 渠道）或你所在产品的技能目录路径，**并补上 `--adapter <你的产品>`**——其余参数完全相同。<!--:WBS-->
 > **⛔ 动手前先做这一件事**：下面的命令**统一写成 `fork …`**（你已用 pip 装了本工具）。**若你是把本技能装进了某个产品的 skills 目录**（ClawHub 等），把 `fork` 换成 `python3 <该技能目录>/scripts/create_branch.py`——**参数完全相同**。<!--:FKS-->
 
 | 用户给了什么 | AI 用什么命令 |
 |---|---|
-| 什么都没贴（当前对话） | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current`（默认截断点） |
-| @引用了一段内容（long-text quote）说打分支 | 从引用 JSON 提取 id（格式 `<sessionId>-<requestId>`，如 `"ec48e1ae-…-e683a22a…"`）→ `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session <sessionId> --request-id <requestId>` |
-| 贴完整 JSON（conversationId + conversationRequestId） | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session <conversationId> --request-id <conversationRequestId>`（conversationId = 会话 ID，直接定位） |
-| 只贴了 conversationRequestId / traceId | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --request-id <id>`（自动反查该 ID 所属会话，跨工作区） |
-| 说了文本/行号 | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --match "XXX"` 或 `--line N` |
+| 什么都没贴（当前对话） | `{{FORK}}{{ADAPTER}} --session current`（默认截断点） |
+| @引用了一段内容（long-text quote）说打分支 | 从引用 JSON 提取 id（格式 `<sessionId>-<requestId>`，如 `"ec48e1ae-…-e683a22a…"`）→ `{{FORK}}{{ADAPTER}} --session <sessionId> --request-id <requestId>` |
+| 贴完整 JSON（conversationId + conversationRequestId） | `{{FORK}}{{ADAPTER}} --session <conversationId> --request-id <conversationRequestId>`（conversationId = 会话 ID，直接定位） |
+| 只贴了 conversationRequestId / traceId | `{{FORK}}{{ADAPTER}} --request-id <id>`（自动反查该 ID 所属会话，跨工作区） |
+| 说了文本/行号 | `{{FORK}}{{ADAPTER}} --session current --match "XXX"` 或 `--line N` |
 | **只是在聊天里"提到"某段文字**（没有复制任何 ID） | 同上：`--match "<那段文字>"` ⚠️ **不要**把它当 `--session`，**更不要编造** `--request-id` |
 
 > **⚠️ 铁律**：用户给了**任何形式的引用**（@long-text 引用 / 复制的请求 ID JSON / 纯 requestId / 指向别处的会话内容）→ **源会话 = 引用所指的那个会话，严禁默认 `--session current` 打当前对话**。识别引用 ID：JSON 里找 `conversationId`，或 @引用内容里找 `"id": "<sessionId>-<requestId>"` 双段拼接格式。拿不准时先 `--dry-run` 展示将要打源会话名 + 断点，问用户确认再正式执行——**绝不反复试错创建分支**。
@@ -122,10 +122,10 @@ session-fork/
 
 | 用户这么说 | 你输出这一行 |
 |---|---|
-| 打分支，命名『论文讨论』 | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --name "论文讨论"` |
-| 从『teal』那条回复开始打分支 | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --match "teal"` |
-| 打分支，从第 6 行截断 | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --line 6` |
-| （贴了 conversationId + conversationRequestId） | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session "<conversationId>" --request-id "<conversationRequestId>"` |
+| 打分支，命名『论文讨论』 | `{{FORK}}{{ADAPTER}} --session current --name "论文讨论"` |
+| 从『teal』那条回复开始打分支 | `{{FORK}}{{ADAPTER}} --session current --match "teal"` |
+| 打分支，从第 6 行截断 | `{{FORK}}{{ADAPTER}} --session current --line 6` |
+| （贴了 conversationId + conversationRequestId） | `{{FORK}}{{ADAPTER}} --session "<conversationId>" --request-id "<conversationRequestId>"` |
 
 ### 排除（不触发执行，只回答问题）
 
@@ -145,7 +145,7 @@ session-fork/
 
 | 你在哪 | 命令入口 |
 |---|---|
-| **WorkBuddy**（技能市场安装） | `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py <参数>` |
+<!--WBS:-->| **WorkBuddy**（技能市场安装） | `{{FORK}}{{ADAPTER}} <参数>` |<!--:WBS-->
 | **其他产品的技能目录**（如从 ClawHub 装进该产品的 skills 目录） | `python3 <该技能目录>/scripts/create_branch.py <参数>` |
 | **pip 安装的命令行**（Claude Code / Codex / Hermes / pi / OpenClaw 在终端里的路径） | `fork <参数>` |
 
@@ -164,14 +164,15 @@ session-fork/
 
 | 产品 | 怎么看到分支 |
 |---|---|
-| **WorkBuddy** | 左侧会话列表**非实时刷新** → 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`） |
+<!--WBS:-->| **WorkBuddy** | 左侧会话列表**非实时刷新** → 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`） |<!--:WBS-->
 | **Claude Code** | 在终端重跑 `claude`，用 **`/resume`** 选择该会话（**无需重启其他程序**） |
 | **Codex** | ① 可直接续跑：`codex exec resume <新 id> "…"`；② **桌面版会话列表也要 ⌘Q 重开**才可见；③ 想被 `codex fork --last` 选中，用 `codex exec resume` 跑一轮 |
 | **Hermes** | **无需重启、无需修复命令**：`hermes sessions list` 即可看到；`hermes chat --resume <分支 id>` 续跑 |
 | **pi** | **无需重启**：会话选择器（`/resume`）或 `/tree` 刷新即可 |
 | **OpenClaw** | `openclaw sessions --json` **立即可列出**；若 Gateway 正在运行，重启一次以加载 |
 
-**只对 WorkBuddy 成立、不要套到别人身上**的四件事：① 界面上的"**复制请求 ID**"按钮；② 「重启后左侧才出现」这个**具体表现**；③ `--fix`（**仅 workbuddy**，其他 adapter 会直接报错）；④ 项目日志写 `.workbuddy/memory/`。
+<!--WBS:-->**只对 WorkBuddy 成立、不要套到别人身上**的四件事：① 界面上的"**复制请求 ID**"按钮；② 「重启后左侧才出现」这个**具体表现**；③ `--fix`（**仅 workbuddy**，其他 adapter 会直接报错）；④ 项目日志写 `.workbuddy/memory/`。<!--:WBS-->
+<!--FKS:-->**与你有关的唯一一条**：`--fix` 只支持 WorkBuddy（其他 adapter 会直接报错）；界面按钮 / 重启客户端 / `.workbuddy/` 日志那几条与你无关。<!--:FKS-->
 
 ### Step 1 — 确认源会话
 
@@ -180,9 +181,9 @@ session-fork/
 - 贴了**完整 JSON**（UI 复制请求 ID 的原始格式）→ 取 `conversationId` 作为源会话（WorkBuddy / Claude Code 这类按 id 命名的存储里，conversationId 就是会话文件名，直接定位、不扫描；其他产品交给引擎按 id 定位）；`conversationRequestId` 作为断点；
 - 贴了**纯 requestId/traceId**（无 conversationId）→ 用 `--request-id` 自动反查该 ID 属于哪个会话（跨工作区兜底，按 mtime 新→旧搜）。
 - **`--session current` 的含义**：当前对话。WorkBuddy 下 = 库里最新 `status='working'` 的会话；其他产品由各自 adapter 定义（一般是"最近使用的会话"）。**不要自己去翻数据库找"当前会话"**——交给 `--session current`。
-- **会话存在哪，不用你记；也❌不要把 WorkBuddy 的路径套到其他产品上**：
-
-  - **WorkBuddy**：`~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl`（slug = cwd 去 `/` 后 `/` 换 `-`）；元数据在 `~/.workbuddy/workbuddy.db` 的 `sessions` 表。
+<!--WBS:-->- **会话存在哪，不用你记；也❌不要把 WorkBuddy 的路径套到其他产品上**：<!--:WBS-->
+<!--FKS:-->**会话存在哪，不用你记**：各产品的目录与格式不同（JSONL 与 SQLite 都有），**由 adapter 自动探测**：<!--:FKS-->
+<!--WBS:-->  - **WorkBuddy**：`~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl`（slug = cwd 去 `/` 后 `/` 换 `-`）；元数据在 `~/.workbuddy/workbuddy.db` 的 `sessions` 表。<!--:WBS-->
   - **其他产品**：**由 adapter 自动探测**——Claude Code / Codex / Hermes / pi / OpenClaw 的目录与格式各不相同（JSONL 与 SQLite 都有）。需要覆盖位置时用环境变量（如 `CODEX_HOME` / `HERMES_HOME`），**不要手改会话文件**。
 
 ### Step 2 — 确认截断点（默认规则优先，勿跳过）
@@ -202,7 +203,8 @@ session-fork/
 
 **⚠️ 最精确的截断点 = 请求ID（`--request-id`）——但"怎么拿到它"只有 WorkBuddy 有现成按钮：**
 
-- **WorkBuddy**：① 在 UI 中点击目标断点处的**助手回复**；② 点"**复制请求ID**"，得到 JSON 如 `{"traceId":"...","conversationRequestId":"abc123","conversationId":"..."}`；③ 用 `--request-id abc123` 截断——**唯一标识一条回复，不会误匹配**。
+<!--WBS:-->- **WorkBuddy**：① 在 UI 中点击目标断点处的**助手回复**；② 点"**复制请求ID**"，得到 JSON 如 `{"traceId":"...","conversationRequestId":"abc123","conversationId":"..."}`；③ 用 `--request-id abc123` 截断——**唯一标识一条回复，不会误匹配**。<!--:WBS-->
+<!--FKS:-->- **其他产品**：**没有这个按钮**（不要教用户去找）——让用户用**文字**（`--match "那段文字"`）或**行号**（`--line N`）指定断点；若用户贴了含 `conversationId` / `requestId` 的 JSON，照样可用 `--request-id`。<!--:FKS-->
 
 **⚠️ 关键：当用户口头描述断点但没给精确文本时（如"截断到项目思维规则模板产生处"），必须先在源会话 jsonl 中搜索确认行号，然后用 `--line`，绝不能忽略断点用默认模式。**
 
@@ -231,40 +233,41 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
 
 **执行方式：只用这一条命令**（不需要 pip、不依赖 cwd，整行复制即可用）：
 
-- **WorkBuddy**：`python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py <参数>`
+<!--WBS:-->- **WorkBuddy**：`{{FORK}}{{ADAPTER}} <参数>`<!--:WBS-->
 - **其他产品的技能目录**：`python3 <该技能目录>/scripts/create_branch.py <参数>`
 - **pip 命令行**：`fork <参数>`
 
 > **⛔ 两条不要做**：① **不要把两套入口混用**（在 WorkBuddy 里不要用裸 `fork`；在 pip 渠道**不要**写 `~/.workbuddy/skills/...`——那台机器上没有）；② **不要执行 `fork_core/cli.py`**（唯一入口是 `scripts/create_branch.py`）。
-> 下面示例统一写 **WorkBuddy 形式**，按 Step 0 换成你的入口（参数完全相同）。
+<!--WBS:-->> 下面示例统一写 **WorkBuddy 形式**，按 Step 0 换成你的入口（参数完全相同）。<!--:WBS-->
+<!--FKS:-->> 下面示例统一写 `fork` 形式；若你用技能目录入口，把 `fork` 换成 `python3 <该技能目录>/scripts/create_branch.py`。<!--:FKS-->
 
 ```bash
 # 场景 1：当前对话打分支（用户没贴任何 ID）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --name "<分支名>"                 # 默认截断到上一轮输出结束
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --match "<拆分点特征文本>"          # 从当前对话某条回复打
+{{FORK}}{{ADAPTER}} --session current --name "<分支名>"                 # 默认截断到上一轮输出结束
+{{FORK}}{{ADAPTER}} --session current --match "<拆分点特征文本>"          # 从当前对话某条回复打
 
 # 场景 2：从贴的 conversation ID 打（用户贴了"复制请求 ID"，可能来自任何对话/工作区）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session "<conversationId>" --request-id "<conversationRequestId>" --name "<分支名>"
+{{FORK}}{{ADAPTER}} --session "<conversationId>" --request-id "<conversationRequestId>" --name "<分支名>"
 #   ↑ conversationId 即 UI 复制 JSON 里的 conversationId（= 源会话 ID），直接定位
 # 只拿到 requestId/traceId 时：自动反查所属会话（无需 --session）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --request-id "<conversationRequestId>" --name "<分支名>"
+{{FORK}}{{ADAPTER}} --request-id "<conversationRequestId>" --name "<分支名>"
 
 # 运维类
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --list                                        # 查询分支
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --fix <分支会话ID>                              # 修复被追加消息的分支（仅 workbuddy）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --verify                                      # 真库体检（发布前必跑），别名 --doctor
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --adapter pi                # pi（L2 真机实测）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --adapter claude-code       # Claude Code（L3 产品终验）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --adapter codex             # Codex（L3 产品终验）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --adapter hermes            # Hermes（L3 产品终验）
-python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session current --adapter openclaw          # OpenClaw（≤2026.6.x / ≥2026.9.x 自动识别后端）
+{{FORK}}{{ADAPTER}} --list                                        # 查询分支
+{{FORK}} --fix <分支会话ID>                              # 修复被追加消息的分支（仅 workbuddy）
+{{FORK}}{{ADAPTER}} --verify                                      # 真库体检（发布前必跑），别名 --doctor
+{{FORK}} --session current --adapter pi                # pi（L2 真机实测）
+{{FORK}} --session current --adapter claude-code       # Claude Code（L3 产品终验）
+{{FORK}} --session current --adapter codex             # Codex（L3 产品终验）
+{{FORK}} --session current --adapter hermes            # Hermes（L3 产品终验）
+{{FORK}} --session current --adapter openclaw          # OpenClaw（≤2026.6.x / ≥2026.9.x 自动识别后端）
 # OpenClaw 后端也可强制：FORK_OPENCLAW_BACKEND=jsonl|sqlite（默认 auto）
 ```
 
 **执行规范**：
 - **先交代产物边界 + 看一眼工作目录的 git 状态**（见「分叉边界 · 给 AI 的执行规则」1/2）——这一步在**创建之前**做，别等用户发现产物没跟着回退再解释；
 - **先 `--dry-run` 确认截断点，再正式执行**（推荐，防打错位置）；
-- **`python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
+- **`{{FORK}}{{ADAPTER}} --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
 - 脚本自动完成备份 → 截取 → 会话 id 替换 → 注册 → 校验，无需手工介入。
 
 ### Step 4 — 验证与汇报
@@ -285,7 +288,8 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session curr
 
 💡 查看新分支
 - <照抄脚本输出里那一行 `ACTION : 分支已创建——…`，它已按产品适配（逐产品要点见 Step 0「分支怎么出现」表）>
-- ⛔ **不要凭记忆写"重启 WorkBuddy"**——非 WorkBuddy 渠道那样说就是错的
+<!--WBS:-->- ⛔ **不要凭记忆写"重启 WorkBuddy"**——非 WorkBuddy 渠道那样说就是错的<!--:WBS-->
+<!--FKS:-->- ⛔ **不要照搬 WorkBuddy 的重启说法**——你不是那个产品，分支可见方式以 `ACTION` 行为准<!--:FKS-->
 
 📌 下一步
 - 按上面那条提示回到产品里打开该分支
@@ -305,7 +309,7 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session curr
 
 建议把分支创建记录追加到**项目自己的日志**里：新 id、行数、截断点、`custom_title`、备份路径——便于日后回溯"这个分支从哪条线分出来的"。
 
-- **WorkBuddy**：日志惯例是 `.workbuddy/memory/YYYY-MM-DD.md`；
+<!--WBS:-->- **WorkBuddy**：日志惯例是 `.workbuddy/memory/YYYY-MM-DD.md`；<!--:WBS-->
 - **其他产品**：用它自己的记忆 / 日志约定，**不要**凭空创建 `.workbuddy/` 目录。
 
 ## 分支命名建议（可自定义）
@@ -320,10 +324,11 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session curr
 2. **默认截断点 = 上一轮对话输出结束**：用户只说"打分支"没指定断点时，默认截到用户最后一条消息之前最后一条完整 assistant 回复的末尾（脚本默认模式自动定位，dry-run 验证即可）。
 3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `arguments` / `argumentsDisplayText` / `toolResult.renderer.value` / `error.message` 等字段都会出现旧 id。v2.4.3 起使用**递归 id 替换**（覆盖全部可读字段，仅 rawContent/rawResponse 等原始内容黑名单不碰）；该替换在**引擎层统一实现，所有产品一致**（早期只在 WorkBuddy / Claude Code 上验证过）。实测一次打分支替换 2557 处。
 4. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
-5. **WorkBuddy 会追加消息到分支文件**（**这条只对 WorkBuddy 成立，不要套到其他产品**）：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户手动 `chmod 444`），已有分支可用 `--fix` 修复（**仅 workbuddy**）。
+<!--WBS:-->5. **WorkBuddy 会追加消息到分支文件**（**这条只对 WorkBuddy 成立，不要套到其他产品**）：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户手动 `chmod 444`），已有分支可用 `--fix` 修复（**仅 workbuddy**）。<!--:WBS-->
 6. **快照分支特性**：复制发生在读取时刻，原会话之后的新消息不会进分支——这是正常行为，不是丢数据。
 7. **附属目录 tool-results/**：是运行时输出缓存，jsonl 已内嵌完整 function_call_result，分支**不需要**复制附属目录（或建空目录即可）。
-8. **先备份再动手**：脚本已内置备份，不要跳过。备份默认**落在你所用产品自己的目录里**——WorkBuddy `~/.workbuddy/backups`；Claude Code `~/.claude/fork-backups`；Codex `~/.codex/fork-backups`；Hermes `$HERMES_HOME/fork-backups`；pi `~/.pi/agent/fork-backups`；OpenClaw `<agent 目录>/fork-backups`。想统一改到别处：设环境变量 **`FORK_BACKUP_DIR`**（对所有产品生效）。
+<!--WBS:-->8. **先备份再动手**：脚本已内置备份，不要跳过。备份默认**落在你所用产品自己的目录里**——WorkBuddy `~/.workbuddy/backups`；Claude Code `~/.claude/fork-backups`；Codex `~/.codex/fork-backups`；Hermes `$HERMES_HOME/fork-backups`；pi `~/.pi/agent/fork-backups`；OpenClaw `<agent 目录>/fork-backups`。想统一改到别处：设环境变量 **`FORK_BACKUP_DIR`**（对所有产品生效）。<!--:WBS-->
+<!--FKS:-->8. **先备份再动手**：脚本已内置备份，不要跳过。备份默认落在你所用产品的目录里（如 `~/.claude/fork-backups`、`~/.codex/fork-backups`、`~/.hermes/fork-backups`），想统一改到别处：设环境变量 **`FORK_BACKUP_DIR`**。<!--:FKS-->
 
 ## 边界
 
@@ -348,9 +353,9 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session curr
 |---|---|---|---|
 | 全部 | `VERIFY FAILED: old session id still present in non-raw fields` | 替换引擎漏了某可读字段（真残留，会拦）| 属创建阻断——v2.4.3 起验证前置：失败自动清理已写文件与注册，**不留脏分支**；排查残留字段是否在新字段类型上 |
 | 全部 | `VERIFY FAILED` 但分支已出现在产品里 | **旧版缺陷**（v2.4.3 及更早：verify 在注册后才跑，失败也留脏分支）| 删掉该脏分支；升级到 v2.4.3+，新失败不再留痕 |
-| **仅 WorkBuddy** | 分支建好但**左侧没出现** | WorkBuddy 会话列表**非实时刷新**（正常行为）| 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`）后即可看到 |
+<!--WBS:-->| **仅 WorkBuddy** | 分支建好但**左侧没出现** | WorkBuddy 会话列表**非实时刷新**（正常行为）| 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`）后即可看到 |<!--:WBS-->
 | 非 WorkBuddy | 分支建好但**看不到** | 各产品不同，且**有反直觉项**（如 Codex 桌面版也要 ⌘Q 重开）| **照脚本输出的 `ACTION` 行做**；逐产品要点见 **Step 0「分支怎么出现」表**——不要照搬 WorkBuddy 的说法 |
-| **仅 WorkBuddy** | 分支打开后**末尾多了一段不是我的内容** | 主进程在创建后继续向分支文件追加了消息（脚本不锁只读）| 用 `--fix <分支会话ID>` 重截断到谱系记录的 `at_seq`（**仅 workbuddy 支持**） |
+<!--WBS:-->| **仅 WorkBuddy** | 分支打开后**末尾多了一段不是我的内容** | 主进程在创建后继续向分支文件追加了消息（脚本不锁只读）| 用 `--fix <分支会话ID>` 重截断到谱系记录的 `at_seq`（**仅 workbuddy 支持**） |<!--:WBS-->
 | 全部 | 原会话之后的新消息没进分支 | 快照特性（复制发生在读取时刻）——正常行为，不是丢数据 | 无需处理 |
 | 全部 | 分支文件找不到 / 索引有记录但文件被删 | 外部清理 | 无恢复必要则删该索引记录（分支是快照，内容已在源会话） |
 | 全部 | `--verify` 体检某分支报"源 id 残留" | 两种可能：①（v2.4.3 及更早）该分支在 v2.2.0 前创建，替换不彻底；②**误报**——fork 后产品追加的消息里恰好出现源 id（如一次 `ls` 输出中恰好有个同名目录，WorkBuddy 的实例是 `ls ~/.workbuddy/tasks`）。v2.4.4 起追加区**只对工具/函数 I/O 字段宽容**，正文等其余字段仍从严 | ①历史脏分支：重新打分支后删除旧分支（备份后）；②升级到 v2.4.4+ 即可。若该分支谱系 `at_seq` 缺失或与实际不符，校验会**故意退回更宽的旧边界**——宁可误报也不漏检，此时重打一次该分支即可 |
@@ -359,7 +364,7 @@ python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py --session curr
 
 ## 安装 / 升级（按产品，各一句话）
 
-- **WorkBuddy**：技能市场搜「会话分叉」，或 SkillHub 搜 `session-fork`；**升级 = 重新装一次**（装完是静态副本，不会自动更新）。
+<!--WBS:-->- **WorkBuddy**：技能市场搜「会话分叉」，或 SkillHub 搜 `session-fork`；**升级 = 重新装一次**（装完是静态副本，不会自动更新）。<!--:WBS-->
 <!--FKS:-->- **其他产品（Claude Code / Codex / Hermes / pi / OpenClaw）**：`pip install git+https://github.com/yamingmou/session-fork-core.git`；重装升级加 `--force-reinstall`。
 - 源码：https://github.com/yamingmou/session-fork-core · 作者 **OfferKuai（Offer快）团队** · License **MIT**（自由使用、修改与再分发，保留署名）。
 

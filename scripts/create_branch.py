@@ -9,7 +9,7 @@ Usage:
   create_branch.py --session <id> --match "<文本>" [--name "分支名"]
   create_branch.py --session <id> --line <N> [--name "分支名"]
   create_branch.py --session <id> --request-id <id> [--name "分支名"]
-  create_branch.py --list [--adapter workbuddy|claude-code]
+  create_branch.py --list [--adapter workbuddy|claude-code|pi|openclaw|codex|hermes]
   create_branch.py --fix <分支会话ID>
 
 Built by the OfferKuai (Offer快) Team — https://www.offerkuai.com/

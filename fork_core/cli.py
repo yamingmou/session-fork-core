@@ -2,6 +2,14 @@
 
 与 scripts/create_branch.py 共用同一套逻辑；后者保留为 WorkBuddy 技能目录
 内的兼容入口（调本模块 main）。
+
+⚠️ **必须支持「直接执行」**：`python3 fork_core/cli.py --list` 也要能跑。
+   2026-09-15 真机实测（用户实际会话）：AI 会自然地试这条路——技能包的代码树里
+   就列着 `fork_core/cli.py  # 命令行解析与输出`——而此前它抛
+   `ImportError: attempted relative import with no known parent package`，
+   在真实会话里**白烧了一轮往返**（该报错作为 function_call_result 留在会话文件里）。
+   下面的 shim 在"被当脚本直接执行"时补上 `__package__` 与 sys.path，
+   使 `python3 fork_core/cli.py` 与 `python3 -m fork_core.cli` **完全等价**。
 """
 
 import argparse
@@ -10,10 +18,14 @@ import shutil
 import sys
 import time
 
+if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被导入）
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "fork_core"
+
 from . import available, create_fork, get_adapter, list_forks
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.7"
+VERSION = "2.4.8"
 
 
 def print_tree(metas) -> None:
@@ -49,6 +61,36 @@ def print_tree(metas) -> None:
         render(r, "", i == len(roots) - 1)
 
 
+def _warn_free_text(value, flag: str, allow: str | None = None) -> None:
+    """值明显不像会话/请求 ID（含空格、含中文、或长度 < 8）→ 提示正确写法。
+
+    **只警告，不阻断**：各产品的 id 形态不统一（WorkBuddy 是 UUID；pi 是
+    `<时间戳>_<id>`；Hermes 是 `20260914_173913_55daeb`；OpenClaw 是 `agent:…`），
+    用严格规则去拦会误伤合法调用。这里只解决一类高频错：**把"一段文字"当成 ID**。
+
+    ⚠️ **已知漏报（2026-09-15 复核，如实记录）**：判据基于"含空格/含中文/长度<8"，
+    因此**单个 ≥8 字符的纯英文单词**（如 `refactor`、`moonlight`）不会被告警 ——
+    它看起来就像个 id。这类输入会在后续查表阶段失败，届时由 engine 的报错 Hint 兜住
+    （`--request-id` / `--session` 未命中时都会提示"若这是一段文字，请改用 --match"）。
+    即：**形状体检负责"早提醒"，错误路径负责"全兜底"**，两层互补。
+    """
+    if not value or value == allow:
+        return
+    v = value.strip()
+    looks_free = (
+        any(ch.isspace() for ch in v)
+        or any("\u4e00" <= ch <= "\u9fff" for ch in v)
+        or len(v) < 8
+    )
+    if looks_free:
+        print(f"⚠️ {flag} 收到的是「一段文字」而不是 ID：{v!r}", file=sys.stderr)
+        print(
+            "   若你想「从某段文字那条回复开始打分支」，正确写法是：\n"
+            f'     python3 <技能目录>/scripts/create_branch.py --session current --match "{v}"',
+            file=sys.stderr,
+        )
+
+
 def _main(argv=None) -> None:
     ap = argparse.ArgumentParser(
         prog="fork",
@@ -67,6 +109,15 @@ def _main(argv=None) -> None:
     ap.add_argument("--verify", "--doctor", action="store_true", dest="verify", help="real-database health check (L2), alias --doctor")
     ap.add_argument("--adapter", default="workbuddy", choices=available(), help="product adapter")
     args = ap.parse_args(argv)
+
+    # ── 参数形状体检：把"传错了参数"变成**会自我纠正的提示** ──────────────
+    # 2026-09-15 实测（用 3B 小模型做输入探针）：它会把用户说的
+    # 「从『teal』那条回复开始打分支」里的 teal 塞进 `--request-id`（甚至 `--session`），
+    # 而正确写法是 `--session current --match "teal"`。
+    # 原报错只把它当"查不到的 ID"，Hint 还往 `--session` 上引 —— 对小模型是误导。
+    # 这里**只警告、不阻断**（各产品 id 形态不一，误判代价高于收益），并把正确写法直接写出来。
+    _warn_free_text(args.session, "--session", allow="current")
+    _warn_free_text(args.request_id, "--request-id")
 
     adapter = get_adapter(args.adapter)
 
@@ -108,6 +159,7 @@ def _main(argv=None) -> None:
         request_id=args.request_id,
         name=args.name,
         dry_run=args.dry_run,
+        backups_dir=adapter.backups_dir(),
     )
 
     print(f"Source   : {r.src_id}  ({r.transcript_path})")
@@ -119,15 +171,16 @@ def _main(argv=None) -> None:
         print("DRY RUN — nothing written. (Would create + register a real branch)")
         return
     if r.backup_dir:
-        print(f"Backup   : {r.backup_dir} (source jsonl only, no database copy)")
+        print(f"Backup   : {r.backup_dir} ({adapter.backup_note()})")
     if r.replacements:
         print(f"Note     : replaced {r.src_id}->{r.new_id} in {r.replacements} structured fields")
     print(f"Verify   : OK ({r.cut} lines, sessionId consistent, zero residue, tail complete)")
     print(f"NEW SESSION ID: {r.new_id}")
     print(f"custom_title: {r.name}  | status: terminated")
-    print(f"⚠️  注意：分支文件未锁定只读。如需防止主进程追加消息，请手动执行：chmod 444 {r.dst_path}")
-    print(f"ACTION   : 分支已创建——会话列表非实时刷新，需重启对应产品才能在左侧看到")
-    print(f"            macOS: ⌘Q 退出重开，或终端执行 open -a WorkBuddy")
+    _ro = adapter.readonly_hint(r.dst_path)
+    if _ro:
+        print(f"⚠️  注意：{_ro}")
+    print(f"ACTION   : 分支已创建——{adapter.activation_hint()}")
 
 
 def run_verify(adapter) -> None:
@@ -146,7 +199,7 @@ def run_verify(adapter) -> None:
     if ok_all:
         print("✅ 全部通过 — 该环境达到 L2 真库级验证，可安全打分支/发布")
     else:
-        print("❌ 存在失败项 — 请修复后再打分支/发布（开发规范 §二·五：L2 真库验证是必须项）")
+        print("❌ 存在失败项 — 请修复后再打分支/发布（L2 真库验证是发布前必须项）")
         sys.exit(1)
 
 
@@ -202,6 +255,15 @@ def main(argv=None) -> None:
     except ForkError as e:
         print(f"❌ {e}", file=sys.stderr)
         raise SystemExit(e.exit_code)
+    except Exception as e:  # noqa: BLE001 —— 兜底：缺陷不该以裸 traceback 示人
+        # 2026-09-15（Hermes 适配器版本闸实测）：适配器/产品层抛出的非 ForkError 异常
+        # 原先直接吐 Python 栈，用户看不到人话。此处统一渲染成一行可读错误。
+        # 需要栈时置 FORK_DEBUG=1（保留排查能力，不牺牲可用性）。
+        print(f"❌ 意外错误（{type(e).__name__}）：{e}", file=sys.stderr)
+        if os.environ.get("FORK_DEBUG"):
+            import traceback
+            traceback.print_exc()
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

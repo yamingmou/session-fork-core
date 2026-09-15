@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 [![Version](https://img.shields.io/github/v/release/yamingmou/session-fork-core?label=version)](https://github.com/yamingmou/session-fork-core/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-WorkBuddy-blue.svg)](https://open.workbuddy.cn/)
+![Platforms](https://img.shields.io/badge/platforms-WorkBuddy%20%7C%20Claude%20Code%20%7C%20Codex%20%7C%20Hermes%20%7C%20pi%20%7C%20OpenClaw-blue.svg)
 [![Python](https://img.shields.io/badge/python-3.9%2B-informational.svg)](https://www.python.org/)
 
 **Halfway through and want to change direction — without redoing everything?**
@@ -19,8 +19,12 @@ What gets forked was never just a conversation: **tasks, plans, code, writing, r
 - *"Same task, I want to try two or three approaches in parallel."* → Open parallel lines and pick one at the end.
 - *"The first half is settled — don't touch it."* → A branch is an independent copy (not a link) — whatever happens to the original afterwards never leaks into it.
 
-- Works with: **WorkBuddy** (branching skill). Cross-platform adapters in progress.
-- Version: 2.4.7 · By the OfferKuai Team · License: MIT
+- Works with (**6 products, all verified on a real machine**): **WorkBuddy** (default, verified on a real library) · **Claude Code** · **Codex** · **Hermes** · **pi** · **OpenClaw** (both generations)
+- OpenClaw is covered in both generations: `<=2026.6.x` (JSONL) and `>=2026.9.x` (the SQLite `transcript_events` table, isomorphic to JSONL). In both cases the engine's branch is listed by OpenClaw itself and can be continued
+- Out of scope: cloud-first services with no local transcript
+- By the OfferKuai Team · License: MIT
+- Version: **see the Release badge at the top** (not written here — a hand-written version always drifts from the tag)
+- **Changelog**: see [CHANGELOG.md](CHANGELOG.md) — every release is written in four parts (value / what's new / changes / verification), and "verification" tells you **how to check it yourself**
 
 ## What gets forked — and what doesn't
 
@@ -51,24 +55,21 @@ Two clarifications worth knowing:
 
 ## Install
 
-### WorkBuddy users (recommended)
+**First find the product you use** (six are listed above), then take the matching row. **All three entry points take identical parameters — with one exception: if you are not on WorkBuddy, you must add `--adapter <your product>`.**
 
-Search for **Session Fork** in the WorkBuddy Open Platform skill marketplace (https://open.workbuddy.cn/), or:
+| You use | How to install | Where it lands | How to run |
+|---|---|---|---|
+| **WorkBuddy** | Search "Session Fork" in the WorkBuddy Open Platform marketplace; or `skillhub install session-fork --namespace user_5b43da63`; or search `session-fork` on [SkillHub](https://skillhub.cn) | `~/.workbuddy/skills/session-fork/` | Just tell WorkBuddy "打分支 / fork this" |
+| **Claude Code / Codex / Hermes / pi / OpenClaw** | **No "skill install" needed**: `pip install git+https://github.com/yamingmou/session-fork-core.git` (or `git clone`) | Your machine, any directory | `fork --adapter <product> --session current --name "<name>"` |
+| **CLI only** (operates on WorkBuddy by default) | Same as above | Your machine | `fork --session current --name "<name>"` ⚠️ **If you are not on WorkBuddy, always add `--adapter <your product>`** — otherwise the command hits WorkBuddy's session store |
 
-```bash
-skillhub install session-fork --namespace user_5b43da63
-```
+> **If you are not on WorkBuddy**
+> 1. You don't need WorkBuddy, and you **don't need to place files in any "skill directory"** — it is a plain Python CLI.
+> 2. Pick your product with `--adapter`; each product's session store is **auto-detected**, and can be overridden by environment variables (e.g. `CODEX_HOME`, `HERMES_HOME`).
+> 3. The `fork` used in the examples below is exactly the command `pip install` gives you.
 
-You can also search `session-fork` on [SkillHub](https://skillhub.cn).
-
-### Command line (pip, cross-platform)
-
-```bash
-pip install git+https://github.com/yamingmou/session-fork-core.git
-fork --version
-```
-
-### From source (any directory)
+<details>
+<summary>From GitHub source (development / self-tests)</summary>
 
 ```bash
 git clone https://github.com/yamingmou/session-fork-core.git
@@ -77,6 +78,7 @@ python3 <clone-dir>/scripts/create_branch.py --session current
 # Self-test (development)
 python3 <clone-dir>/tests/test_wb_adapter.py
 ```
+</details>
 
 ## Usage
 
@@ -88,6 +90,10 @@ python3 <clone-dir>/tests/test_wb_adapter.py
 - Try several approaches in parallel → fork the same work twice, name them, and let each run its own way.
 
 ### Command line
+
+> **How to read these examples**: `fork` below is shorthand for the entry point.
+> **If you installed from a skill marketplace you do NOT have a `fork` command** (it only exists after `pip install`) —
+> substitute the full path: `python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py`. Parameters are identical.
 
 ```bash
 # Fork the current session (cut at the end of the previous turn by default)
@@ -106,6 +112,18 @@ fork --list
 fork --list --tree
 ```
 
+### What the output looks like
+
+Cut point, new id, and the verification verdict at a glance — **nothing is written until it checks out**:
+
+```text
+Source   : <source session id>   (…/projects/<workspace>/<source session id>.jsonl)
+Split    : line 76 / 76  (default (previous turn's output end))
+Branch   : <new session id>   name='paper-discussion'
+Verify   : ✅ OK (6 lines, sessionId consistent, zero residue, tail complete)
+DRY RUN — nothing written.        # only with --dry-run; without it the branch is really created
+```
+
 ## How it works
 
 A fork is a **storage-level copy**: take lines `1..cut` of the source transcript, rewrite the session ids inside them recursively, write the result to a new session file, and register it in the session index and the lineage index. The source session is not modified at all.
@@ -114,20 +132,16 @@ Under the hood it is the **fork-core engine + per-product adapters** (internal d
 
 ```
 session-fork/
-├── SKILL.md                    # skill definition
-├── scripts/create_branch.py    # the only entry point
-├── fork_core/                  # product-agnostic engine
-│   ├── engine.py               # cut-point location / slicing / backup / verify
-│   ├── models.py               # SessionMeta / ForkResult contracts
-│   ├── cli.py                  # CLI parsing and output
-│   ├── adapters.py             # adapter registry (factory)
-│   ├── adapter_base.py         # TranscriptionAdapter interface
-│   ├── adapter_workbuddy.py    # WorkBuddy adapter (default, tested on real data)
-│   └── adapter_claude_code.py  # Claude Code adapter (in progress)
+├── SKILL.md                    # skill definition (the doc the AI reads)
+├── scripts/create_branch.py    # the only entry point ← run this one
+├── fork_core/                  # engine + per-product adapters
 └── tests/                      # self-tests (development)
 ```
 
-Adding support for another product means adding one `adapter_<product>.py`; the engine stays untouched.
+**Supported products are listed under "Works with" above.** The internals of `fork_core/` are developer
+documentation and do not affect usage — **please don't bypass the entry point by running modules inside it**
+(the only entry point is `scripts/create_branch.py`).
+Adding support for another product means adding one `adapter_<product>.py`; the engine stays untouched (existing adapters need no changes either).
 
 ## Links
 
