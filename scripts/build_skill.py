@@ -38,7 +38,7 @@ SRC = REPO / "skill" / "SKILL.src.md"
 OUT_WB = REPO / "SKILL.md"
 OUT_FORK = REPO / "dist" / "SKILL.fork.md"
 
-LONG_ENTRY = "python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py"
+LONG_ENTRY = 'python3 "${SK}scripts/create_branch.py"'
 FORK_ENTRY = "fork"
 
 ADAPTER_WB = ""

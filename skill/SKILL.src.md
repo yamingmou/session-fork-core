@@ -99,7 +99,14 @@ session-fork/
 > **用户只是在说文字**（哪怕他说的是"那条**回复**"）→ 用 **`--match "<那段文字>"`**。
 > ⚠️ `--request-id` **只能装 ID**，不能装文字。
 
-<!--WBS:-->> **⛔ 动手前先做这一件事**：下面的命令**统一写成 WorkBuddy 形式**（`{{FORK}}{{ADAPTER}} …`）。**若你不在 WorkBuddy 里**，先读「**Step 0 · 先判定你在哪个产品里**」，把前缀换成 `fork`（pip 渠道）或你所在产品的技能目录路径，**并补上 `--adapter <你的产品>`**——其余参数完全相同。<!--:WBS-->
+<!--WBS:-->> **⛔ 动手前先做这一件事**：下面的命令**统一写成 WorkBuddy 形式**（`{{FORK}}{{ADAPTER}} …`）。**若你不在 WorkBuddy 里**，先读「**Step 0 · 先判定你在哪个产品里**」，把前缀换成 `fork`（pip 渠道）或你所在产品的技能目录路径，**并补上 `--adapter <你的产品>`**——其余参数完全相同。
+>
+> **入口路径先用命令取，不要照抄**（技能目录可能带市场后缀，如 `session-fork__skillhub/`；照抄会踩空，现场乱找入口＝跑到别的目录的副本上）：
+> ```bash
+> SK=$(ls -d ~/.workbuddy/skills/session-fork*/ 2>/dev/null | head -1)
+> [ -n "$SK" ] && [ -f "${SK}scripts/create_branch.py" ] || echo "⛔ 找不到技能入口，先确认技能装在哪"
+> echo "入口: ${SK}scripts/create_branch.py"
+> ```<!--:WBS-->
 > **⛔ 动手前先做这一件事**：下面的命令**统一写成 `fork …`**（你已用 pip 装了本工具）。**若你是把本技能装进了某个产品的 skills 目录**（ClawHub 等），把 `fork` 换成 `python3 <该技能目录>/scripts/create_branch.py`——**参数完全相同**。<!--:FKS-->
 
 | 用户给了什么 | AI 用什么命令 |
@@ -152,7 +159,7 @@ session-fork/
 **判定顺序（30 秒内定下来，不要猜、不要两套都试）**：
 
 1. `fork --version` 能跑通 → 用 **`fork`**；
-2. 否则 `~/.workbuddy/skills/session-fork/scripts/create_branch.py` 存在 → 用 **WorkBuddy 形式**；
+2. 否则 `ls -d ~/.workbuddy/skills/session-fork*/ 2>/dev/null | head -1` **有命中、且该目录下 `scripts/create_branch.py` 存在** → 用 **WorkBuddy 形式**（真入口 = `${SK}scripts/create_branch.py`，见上文取法；⚠️ 目录名可能带市场后缀 `__skillhub`，**不要**写死成 `session-fork/`）；
 3. 否则看你所在产品的 skills 目录里有没有本技能；
 4. 都不确定 → **问用户一句**："你是在 WorkBuddy 里用，还是本机命令行（pip 装的）？"
 
@@ -180,7 +187,8 @@ session-fork/
 - 什么都没贴 → `--session current`（当前对话，脚本自己判定，含义见下）；
 - 贴了**完整 JSON**（UI 复制请求 ID 的原始格式）→ 取 `conversationId` 作为源会话（WorkBuddy / Claude Code 这类按 id 命名的存储里，conversationId 就是会话文件名，直接定位、不扫描；其他产品交给引擎按 id 定位）；`conversationRequestId` 作为断点；
 - 贴了**纯 requestId/traceId**（无 conversationId）→ 用 `--request-id` 自动反查该 ID 属于哪个会话（跨工作区兜底，按 mtime 新→旧搜）。
-- **`--session current` 的含义**：当前对话。WorkBuddy 下 = 库里最新 `status='working'` 的会话；其他产品由各自 adapter 定义（一般是"最近使用的会话"）。**不要自己去翻数据库找"当前会话"**——交给 `--session current`。
+- **`--session current` 的含义**：**你正在其中的这个对话**。唯一判据 = 执行环境里的会话标识（`CLAUDE_SESSION_ID` / `CODEBUDDY_SESSION_ID` / `BAGGAGE`）；其他产品由各自 adapter 定义。**不要自己去翻数据库找"当前会话"**——交给 `--session current`。
+- **⚠️ `current` 不猜**：拿不到会话标识时脚本**硬失败**，不会替你选一个"最近活跃的会话"。旧行为（退回"库里最新 `status='working'` 的会话"）**不是**当前对话——2026-09-15 实测：同一条 `--session current` 在 8 分钟内解析出**两个不同源会话**（一次命中本对话、一次打到另一个对话，产物是**另一个对话的分支**）。确实想从"最近活跃的会话"打时，用**显式**的 `--session latest-working`（语义即其名）。
 <!--WBS:-->- **会话存在哪，不用你记；也❌不要把 WorkBuddy 的路径套到其他产品上**：<!--:WBS-->
 <!--FKS:-->**会话存在哪，不用你记**：各产品的目录与格式不同（JSONL 与 SQLite 都有），**由 adapter 自动探测**：<!--:FKS-->
 <!--WBS:-->  - **WorkBuddy**：`~/.workbuddy/projects/<workspace-slug>/<session-id>.jsonl`（slug = cwd 去 `/` 后 `/` 换 `-`）；元数据在 `~/.workbuddy/workbuddy.db` 的 `sessions` 表。<!--:WBS-->
@@ -271,6 +279,9 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
 
 **执行规范**：
 - **先交代产物边界 + 看一眼工作目录的 git 状态**（见「分叉边界 · 给 AI 的执行规则」1/2）——这一步在**创建之前**做，别等用户发现产物没跟着回退再解释；
+- **⛔ 回读 `Source` 行（必做）**：脚本输出的第一行是
+  `Source   : <会话id>  「<会话名>」`
+  **先确认这个源会话就是你（和用户）所在的那个对话**。父 id 对不上时肉眼看不出来，**名字**能一眼看出来。不一致 → **立即停手**，把"你在的对话 / 实际被当成源会话的对话"两个名字摆给用户，问清要哪条；**不要继续，更不要交付一个"来历正确但对话不对"的分支**（2026-09-15 事故正是如此：用户在 A 对话里打分支，产物是 B 对话的分支）；
 - **先 `--dry-run` 确认截断点，再正式执行**（推荐，防打错位置）；
 - **`{{FORK}}{{ADAPTER}} --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
 - 脚本自动完成备份 → 截取 → 会话 id 替换 → 注册 → 校验，无需手工介入。
@@ -289,7 +300,8 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
 - 分支行数：N 行
 
 📦 原会话不受影响
-- 原会话 ID：<src_id>（继续正常使用）
+- 源会话：<src_id>「<源会话名>」（= 你所在的那个对话，**已核对名称**）
+- 原会话继续正常使用，不受影响
 
 💡 查看新分支
 - <照抄脚本输出里那一行 `ACTION : 分支已创建——…`，它已按产品适配（逐产品要点见 Step 0「分支怎么出现」表）>
@@ -330,7 +342,7 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
    - **会话内打分支**（最常见：你在对话里说"打分支"，由 agent 执行脚本）→ 切在**上一轮输出结束**（最后一条 user 消息的完整回复末尾）。本轮指令与叙述不进分支。
    - **从外部执行**（终端、定时任务、显式指定别家会话）→ **整份复制**到末尾最后一条完整 assistant 回复。
    - ⚠️ **不要** 在会话内试图自己判断"上一轮结束在哪"：**本轮你自己的叙述已经在同一份文件里**，按"最后一条 assistant 文本"看必然看到的是自己。以 `--dry-run` 打印的锚点为准（会打出行号与锚点原文）。要强制整份：`--whole`。
-   - 历史教训（v2.1.0 → v2.4.8 一直存在，2026-09-15 定位并修复）：默认模式只做"全文件倒扫最后一条 assistant 文本"，在会话内打分支时会**吞掉整段本轮内容**（真实两例多吞 19 / 28 行，含"打分支"这条指令本身），且切点随 agent 继续说话而前移（dry-run 报 18778、实跑写 18782）——执行者据此以为切对了。根因是 v2.1.0 为支持"分支再 fork 整份复制"删掉了锚定 user 消息的实现，把主用例一起改坏。
+   - 历史缺陷（v2.1.0 → v2.4.8 一直存在，2026-09-15 定位并修复）：默认模式只做"全文件倒扫最后一条 assistant 文本"，在会话内打分支时会**吞掉整段本轮内容**（真实两例多吞 19 / 28 行，含"打分支"这条指令本身），且切点随 agent 继续说话而前移（dry-run 报 18778、实跑写 18782）——执行者据此以为切对了。根因是 v2.1.0 为支持"分支再 fork 整份复制"删掉了锚定 user 消息的实现，把主用例一起改坏。
 3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `arguments` / `argumentsDisplayText` / `toolResult.renderer.value` / `error.message` 等字段都会出现旧 id。v2.4.3 起使用**递归 id 替换**（覆盖全部可读字段，仅 rawContent/rawResponse 等原始内容黑名单不碰）；该替换在**引擎层统一实现，所有产品一致**（早期只在 WorkBuddy / Claude Code 上验证过）。实测一次打分支替换 2557 处。
 4. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
 <!--WBS:-->5. **WorkBuddy 会追加消息到分支文件**（**这条只对 WorkBuddy 成立，不要套到其他产品**）：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户手动 `chmod 444`），已有分支可用 `--fix` 修复（**仅 workbuddy**）。<!--:WBS-->

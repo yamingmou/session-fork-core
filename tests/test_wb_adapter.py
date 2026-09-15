@@ -623,11 +623,39 @@ try:
         "current 应解析为执行环境所在会话（最新 working 是 …0002，会指错）"
     print("✓ resolve_session(current): 认执行环境会话，不误取最新的 working 会话")
 
-    # 16e. 标识过期（环境里的会话已无 transcript）→ 退回存储，不拿着它去撞 "not found"
+    # 16e. 标识过期（环境里的会话已无 transcript）→ **硬失败**，不得回退到别的对话
+    #      ⚠️ 2026-09-15 事故订正：本条原先断言 `resolve_session('current') == _sem_newer`
+    #      （"过期标识应回退到产品存储"），并把"不抛 not found"当成兜底特性发绿勾。
+    #      但"最新的 working 会话"**不等于**"我正在其中的这个对话"：实测同一命令 8 分钟内
+    #      解析出两个不同源会话（19:35 命中本对话、19:43 打到「检索与审核」），产物是一个
+    #      别的对话的分支。回退 = 静默打错对话，所以此期望是**缺陷本身**，改为硬失败。
     os.environ["CLAUDE_SESSION_ID"] = "NOT-EXIST-0000-0000-000000000000"
     assert _a6.running_session_id() == "NOT-EXIST-0000-0000-000000000000"
-    assert _a6.resolve_session("current") == _sem_newer, "过期标识应回退到产品存储"
-    print("✓ resolve_session(current): 过期标识回退存储（不抛 not found）")
+    try:
+        _a6.resolve_session("current")
+        raise AssertionError("过期标识必须硬失败，不得静默回退到别的对话")
+    except SystemExit as _e:
+        assert "找不到对应的对话文件" in str(_e), str(_e)
+    print("✓ resolve_session(current): 过期标识硬失败（不再静默回退到别的对话）")
+
+    # 16e2. 标识**完全缺失**（人从终端 / 环境没注入）→ 同样硬失败：没有标识就无法判定
+    #       "我在哪个对话里"，猜错就打出另一个对话的分支。
+    os.environ.pop("CLAUDE_SESSION_ID", None)
+    os.environ.pop("CODEBUDDY_SESSION_ID", None)
+    os.environ.pop("BAGGAGE", None)
+    assert _a6.running_session_id() is None
+    try:
+        _a6.resolve_session("current")
+        raise AssertionError("无会话标识时必须硬失败，不得猜")
+    except SystemExit as _e:
+        assert "无法确定" in str(_e), str(_e)
+    print("✓ resolve_session(current): 无会话标识硬失败（不猜）")
+
+    # 16e3. 旧语义有显式入口，且不再冒充 current
+    os.environ["CLAUDE_SESSION_ID"] = _sem_src
+    assert _a6.resolve_session("latest-working") == _sem_newer, \
+        "latest-working 才是「最新 working 会话」的显式入口"
+    print("✓ resolve_session(latest-working): 旧语义已挪到显式入口")
 finally:
     os.environ.pop("CLAUDE_SESSION_ID", None)
 
@@ -646,6 +674,8 @@ assert (_c3, _t3) == (2, 2) and "单轮会话" in _n3, (_c3, _n3)
 
 # ⚠️ 单轮会话在"会话内"必须是**整份**：用户刚发话、助手刚答完，这一刻要打分支
 #    （没有"本轮要排除"的语义落点），退回整份 = 保留全部内容，是正确的兜底。
+#    【条款 24 已审 · 2026-09-15】兜底值 == 正确答案：单轮会话若按 in-session 排除最后一轮
+#    ⇒ 产物是空分支（无用），故整份是唯一有语义的解；且引擎随件给 note，不静默。
 os.environ["CLAUDE_SESSION_ID"] = _sem3
 try:
     _r3 = _cf6(_a6, _sem3, name="T", dry_run=True, backups_dir=os.path.join(_sem_tmp, "bk"))

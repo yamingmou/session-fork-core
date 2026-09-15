@@ -148,6 +148,40 @@ def locate_before_current_turn(adapter, lines: list[dict]) -> tuple[int, int, st
     return cut, total, f"L{last_user} 之前无完整回复（单轮会话）→ 退回整份语义"
 
 
+# 系统会在 user 消息首部注入上下文块（<system-reminder …>、<memory …> 等）。
+# 预览若直接取消息开头，打印出来的是这串 wrapper —— 人拿着它**核对不出"是不是我刚说的那句话"**，
+# 等于"打印了锚点原文"这件事白做（不重犯 #19④）。故跳过首部包裹块，取其后的**人类文本**。
+_WRAPPER_BLOCK = re.compile(r"^\s*<([a-zA-Z][\w-]*)(?:\s[^>]*)?>.*?</\1>\s*", re.DOTALL)
+
+
+def _strip_wrappers(text: str) -> str:
+    """跳过首部系统注入的包裹块，取其后（或其内）的人类文本。
+
+    真实形态有两种，都必须处理（2026-09-15 实测）：
+      a) `<system-reminder …>…</system-reminder>人话`          → 取后面的"人话"
+      b) `<system-reminder …>…</system-reminder><user_query>人话</user_query>`
+         → 后面那块**自己**就是人话的容器，取它的**内容**
+    ⚠️ 初版只在"剥完还剩东西"时才认，剩空就回退整串原文 ⇒ (b) 形态下又吐回 wrapper，
+       等于没修。故改为：剥到空时，返回**最后剥掉的那块的内容**（即最内层载荷）。
+    """
+    out = text
+    last_inner = ""
+    while True:
+        m = _WRAPPER_BLOCK.match(out)
+        if not m:
+            break
+        block = m.group(0)
+        inner = re.sub(r"^\s*<[^>]*>", "", block, count=1)
+        inner = re.sub(r"</[^>]*>\s*$", "", inner, count=1).strip()
+        rest = out[m.end():].strip()
+        if not rest:
+            # 后面没有了 ⇒ 这一块自己就是人话容器（形态 b）
+            return inner or last_inner or text
+        last_inner = inner or last_inner
+        out = rest
+    return out or last_inner or text
+
+
 def _preview(adapter, obj: dict, limit: int = 28) -> str:
     """取一行消息的文本预览（单行化、截断）——给用户看"切在哪句话之前"。
 
@@ -155,6 +189,7 @@ def _preview(adapter, obj: dict, limit: int = 28) -> str:
     "截在上一轮输出结束"，实际截在自己的叙述上，而输出里没有任何可核对的东西。
     """
     text = " ".join((adapter.get_text(obj) or "").split())
+    text = _strip_wrappers(text)
     return text[:limit] + ("…" if len(text) > limit else "")
 
 

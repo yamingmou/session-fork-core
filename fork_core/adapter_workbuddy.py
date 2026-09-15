@@ -43,30 +43,74 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         return db
 
     def resolve_session(self, session_ref: str) -> str:
-        if session_ref != "current":
+        # 显式 id：原样返回（调用方既已指名，不替他改主意）
+        if session_ref not in ("current", "latest-working"):
             return session_ref
-        # ① 首选**执行环境的会话标识**：`current` 的本义是"我正在其中的那个会话"，
-        #    而下面的 SQL 只是"最近一个 status='working' 的会话"——并行会话 / 新开会话
-        #    都会让它指错（2026-09-15 复核）。环境标识命中且该会话确有 transcript 才采纳；
-        #    没有 transcript 说明是过期/伪造标识，退回 ②，不拿它去撞后面的 "not found"。
+
+        # 「最近活跃的会话」= 旧 `current` 的回退语义，单独给一个**名字说实话**的入口。
+        # 需要它的人（终端里没有会话上下文、又不想记 id）显式说 latest-working，
+        # 而不是让 `current` 悄悄替他猜。
+        if session_ref == "latest-working":
+            db = self._connect()
+            try:
+                cur = db.cursor()
+                cur.execute(
+                    "SELECT id FROM sessions WHERE status='working' ORDER BY created_at DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+            finally:
+                db.close()
+            if not row:
+                raise SystemExit(
+                    "✗ --session latest-working：库里没有 status='working' 的会话。\n"
+                    "  请显式给出源会话 id：--session <会话id>。"
+                )
+            return row[0]
+
+        # ---- session_ref == "current" ----
+        # `current` 的本义是「**我正在其中的这个对话**」，判定它只能靠执行环境里的会话标识。
+        # 拿不到标识时**必须停下来问**，不能退回"库里最新 working 会话"——
+        # 2026-09-15 实测事故：bug 线里先后两次 `--session current`（同一条命令），
+        # 8 分钟内解析出**两个不同的源会话**（19:35 命中本对话、19:43 打到「检索与审核」），
+        # 产物是一个**别的对话的分支**（父 id 与用户所在对话不符，肉眼几乎看不出来）。
+        # 猜错的代价 = 生成来历不明的分支 + 污染谱系 + 用户以为打的是自己那条；
+        # 远大于让调用方补一个参数。所以此处不猜。
         rid = self.running_session_id()
-        if rid:
-            p, _ = self.find_transcript(rid)
-            if p:
-                return rid
-        # ② 退回产品存储（人从终端执行、无会话上下文时的原有路径）
-        db = self._connect()
-        try:
-            cur = db.cursor()
-            cur.execute(
-                "SELECT id FROM sessions WHERE status='working' ORDER BY created_at DESC LIMIT 1"
+        if not rid:
+            raise SystemExit(
+                "✗ --session current 无法确定「当前对话」：执行环境里没有会话标识\n"
+                "  （CLAUDE_SESSION_ID / CODEBUDDY_SESSION_ID / BAGGAGE 均缺失）。\n"
+                "\n"
+                "  没有标识就无法判定你在哪个对话里，猜错会打出**另一个对话的分支**——所以这里不猜。\n"
+                "  请改用其中之一：\n"
+                "    · 显式指定源会话                --session <会话id>\n"
+                "    · 用请求 id 反查                --request-id <conversationRequestId>\n"
+                "    · 确实要从「最近活跃的会话」打     --session latest-working（语义即其名）\n"
             )
-            row = cur.fetchone()
-        finally:
-            db.close()
-        if not row:
-            raise SystemExit("No 'working' session found to branch from.")
-        return row[0]
+        p, _ = self.find_transcript(rid)
+        if p:
+            return rid
+        # 标识存在但找不到对话文件 = 过期/伪造标识，或与当前工作区不匹配 → 同样不猜
+        raise SystemExit(
+            "✗ --session current：环境标识 %s 找不到对应的对话文件。\n"
+            "  该标识可能已过期，或与当前工作区不匹配（工作区：%s）。\n"
+            "  请显式给出源会话 id：--session <会话id>。" % (rid, PROJECTS_DIR)
+        )
+
+    def describe_session(self, session_id: str) -> str:
+        """源会话的显示名（自定义标题优先）——输出里带上，便于一眼确认源对话是否正确。"""
+        try:
+            db = self._connect()
+            try:
+                for r in db.execute(
+                    "SELECT custom_title, title FROM sessions WHERE id=?", (session_id,)
+                ):
+                    return (r["custom_title"] or r["title"] or "").strip()
+            finally:
+                db.close()
+        except Exception:
+            pass
+        return ""
 
     def find_transcript(self, session_id: str) -> tuple[os.PathLike | None, str | None]:
         # 安全校验（2026-09-03 复核）：拒绝路径穿越——session id 只允许文件名字符，

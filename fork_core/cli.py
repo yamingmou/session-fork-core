@@ -25,7 +25,7 @@ if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被�
 from . import available, create_fork, get_adapter, list_forks
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.9"
+VERSION = "2.4.10"
 
 
 def print_tree(metas) -> None:
@@ -61,7 +61,9 @@ def print_tree(metas) -> None:
         render(r, "", i == len(roots) - 1)
 
 
-def _warn_free_text(value, flag: str, allow: str | None = None) -> None:
+def _warn_free_text(value, flag: str, allow=None) -> None:
+    # allow 允许传单个关键字或一组关键字（current / latest-working 都是合法关键字，
+    # 不是"把一段文字当 ID"）。原先只支持单个字符串，新增关键字时容易被漏掉。
     """值明显不像会话/请求 ID（含空格、含中文、或长度 < 8）→ 提示正确写法。
 
     **只警告，不阻断**：各产品的 id 形态不统一（WorkBuddy 是 UUID；pi 是
@@ -74,8 +76,12 @@ def _warn_free_text(value, flag: str, allow: str | None = None) -> None:
     （`--request-id` / `--session` 未命中时都会提示"若这是一段文字，请改用 --match"）。
     即：**形状体检负责"早提醒"，错误路径负责"全兜底"**，两层互补。
     """
-    if not value or value == allow:
+    if not value:
         return
+    if allow is not None:
+        allowed = (allow,) if isinstance(allow, str) else tuple(allow)
+        if value in allowed:
+            return
     v = value.strip()
     looks_free = (
         any(ch.isspace() for ch in v)
@@ -97,7 +103,9 @@ def _main(argv=None) -> None:
         description="Cross-product session forking (Fork = Projection Derivative).",
     )
     ap.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-    ap.add_argument("--session", help="source session id, or 'current'")
+    ap.add_argument("--session",
+                    help="source session id, or 'current' (this conversation), "
+                         "or 'latest-working' (most recent active session)")
     ap.add_argument("--match", help="split-point text within the final assistant reply")
     ap.add_argument("--line", type=int, help="exact 1-based split line (alternative to --match)")
     ap.add_argument("--request-id", help="requestId from product UI 'Copy Request ID' (most precise)")
@@ -119,7 +127,7 @@ def _main(argv=None) -> None:
     # 而正确写法是 `--session current --match "teal"`。
     # 原报错只把它当"查不到的 ID"，Hint 还往 `--session` 上引 —— 对小模型是误导。
     # 这里**只警告、不阻断**（各产品 id 形态不一，误判代价高于收益），并把正确写法直接写出来。
-    _warn_free_text(args.session, "--session", allow="current")
+    _warn_free_text(args.session, "--session", allow=("current", "latest-working"))
     _warn_free_text(args.request_id, "--request-id")
 
     adapter = get_adapter(args.adapter)
@@ -166,7 +174,17 @@ def _main(argv=None) -> None:
         whole=args.whole,
     )
 
-    print(f"Source   : {r.src_id}  ({r.transcript_path})")
+    # 源会话**名字**必须回显：打错对话时，父 id 是看不出来的，名字一眼就能看出来
+    # （2026-09-15 事故：`--session current` 静默打到另一个对话，输出里只有 id）
+    _desc = getattr(adapter, "describe_session", None)
+    _src_name = ""
+    if callable(_desc):
+        try:
+            _src_name = _desc(r.src_id) or ""
+        except Exception:
+            _src_name = ""
+    print(f"Source   : {r.src_id}  {'「%s」' % _src_name if _src_name else '（未取到名称）'}")
+    print(f"           {r.transcript_path}")
     print(f"Split    : line {r.cut} / {r.total}  ({r.how})")
     print(f"Branch   : {r.new_id}  name={r.name!r}")
     if args.dry_run:
