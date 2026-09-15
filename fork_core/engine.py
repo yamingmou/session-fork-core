@@ -81,12 +81,22 @@ def _load_lines(path: str) -> list[dict]:
 
 
 def locate_last_reply(adapter, lines: list[dict]) -> tuple[int, int]:
-    """DEFAULT 模式：截断点 = 最后一条完整 assistant 回复的末尾（上一轮输出结束）。
+    """截断点 = 全文件最后一条有文本的 assistant 回复（**整份 fork** 语义）。
 
-    语义：截到"文件末尾之前最后一条有文本的 assistant 回复"。
-    - 主会话（用户刚发"打分支"，末条是 user）：截到它之前的最后一条 assistant 回复；
-    - 分支再 fork（分支文件末条是 assistant，用户尚未发新指令）：截到该 assistant
-      ——即分支当前的全部内容都成为新 fork 的历史（快照点可回：新投影自身也可再派生）。
+    用在：显式指定源会话（`--session <id>`，含"从分支再 fork"）、无会话上下文的外部执行。
+    语义 = "把这个会话已落定的内容整份复制走"。
+
+    ⚠️ **不要**用它实现"从会话内部打分支"的默认模式：agent 在本轮里执行 fork 时，
+    它自己的叙述（reasoning / function_call / assistant 文本）**已经写进了同一份 transcript**，
+    所以"文件末尾最后一条 assistant 文本"必然是本轮的叙述，而不是上一轮的收尾 ——
+    分支会吞掉本轮（含"打分支"这条指令本身与 fork 自己的输出），且随 agent 再说话继续前移。
+    那种场景要用 `locate_before_current_turn()`。
+
+    历史注记（v2.1.0 回归，2026-09-15 定位）：本函数原名即"默认模式"，
+    提交 82df3a5（v2.1.0，2026-09-01）为支持"分支再 fork 时整份复制"，
+    把原实现里"锚在最后一条 user 消息之前"的 4 行删掉、只留全文件倒扫 ——
+    于是**主用例（会话内打分支）被一起改坏**。两种语义都需要，故拆成两个函数，
+    由 `create_fork` 按"我是否就在该会话里"（`adapter.running_session_id()`）分派。
     """
     n = len(lines)
     for i in range(n, 0, -1):
@@ -94,6 +104,58 @@ def locate_last_reply(adapter, lines: list[dict]) -> tuple[int, int]:
         if adapter.is_assistant_message(o) and adapter.get_text(o).strip():
             return i, n
     raise ForkError("No completed assistant reply found in transcript")
+
+
+def locate_before_current_turn(adapter, lines: list[dict]) -> tuple[int, int, str]:
+    """**从会话内部**打分支（`--session current`）的默认截断点。
+
+    语义（= 文档承诺的"上一轮输出结束"）：截断点 = **最后一条 user 消息之前**的最后一条
+    有文本的 assistant 回复末尾。返回 (cut, total, note)。
+
+    为什么必须锚在 user 消息上（2026-09-15 真实事故，两个真实分支现场复原）：
+    agent 执行 fork 时，本轮的 user 消息（"打分支"）与其后的全部叙述**都已经在文件里**。
+    按"文件末尾最后一条 assistant 文本"切 ⇒ 切点必然落在本轮叙述上：
+      · `3ccebc53`（源 `ec48e1ae`）：切在 L18782，正确应为 L18763 —— **多吞 19 行**
+        （含"打分支"指令本身、dry-run 的输出、fork 自己的输出）；
+      · `5df71252`（源 `d6af6ce6`）：切在 L8452，正确应为 L8424 —— 多吞 28 行。
+    且切点随 agent 继续输出而**前移**：同一轮内 dry-run 报 18778、实跑写 18782（漂移 4 行）——
+    执行者据此以为"截在上一轮输出结束"，实际截在自己的叙述上。
+    锚在"最后一条 user 消息"上则**在本轮内稳定不漂移**（user 消息在本轮不会新增）。
+
+    ⚠️ 该规则同时是被验证器假定的边界形态：`verify_branch` 判"追加区是否开启新回合"时，
+    前提正是 **L(cut+1) 是一条 user 消息**。
+
+    退化情形（都不是错误，退回整份 fork 语义并在 note 里说明，**不静默**）：
+    - 文件里没有 user 消息（纯注入 / 异常会话）；
+    - 最后一条 user 消息之前没有任何有文本的 assistant 回复（单轮会话：用户刚问、助手刚答）。
+    """
+    n = len(lines)
+    last_user = None
+    for i, o in enumerate(lines, 1):
+        if adapter.is_user_message(o):
+            last_user = i
+    if last_user is None:
+        cut, total = locate_last_reply(adapter, lines)
+        return cut, total, "文件内无 user 消息 → 退回整份语义"
+    for i in range(last_user - 1, 0, -1):
+        o = lines[i - 1]
+        if adapter.is_assistant_message(o) and adapter.get_text(o).strip():
+            return i, n, (
+                f"锚定 L{last_user} 的 user 消息「{_preview(adapter, lines[last_user - 1])}」"
+                f"（= 本轮指令），切在它之前"
+            )
+    cut, total = locate_last_reply(adapter, lines)
+    return cut, total, f"L{last_user} 之前无完整回复（单轮会话）→ 退回整份语义"
+
+
+def _preview(adapter, obj: dict, limit: int = 28) -> str:
+    """取一行消息的文本预览（单行化、截断）——给用户看"切在哪句话之前"。
+
+    打印锚点原文是刻意的：**切点语义必须能被当场核对**。真实事故里执行者以为
+    "截在上一轮输出结束"，实际截在自己的叙述上，而输出里没有任何可核对的东西。
+    """
+    text = " ".join((adapter.get_text(obj) or "").split())
+    return text[:limit] + ("…" if len(text) > limit else "")
 
 
 def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None, request_id=None) -> tuple[int, int]:
@@ -504,11 +566,16 @@ def create_fork(
     name: str = None,
     dry_run: bool = False,
     backups_dir: str = DEFAULT_BACKUPS_DIR,
+    whole: bool = False,
 ) -> ForkResult:
     """核心入口：创建分支。
 
     流程：resolve → find → locate → backup → truncate+rewrite → write → verify → register
     （verify 先于 register——验证失败不留任何 db/lineage 痕迹；2026-09-04 学习 Marvis）
+
+    `whole=True`：默认模式下强制"整份复制"语义（含当前未完成回合的叙述）。
+    只在"会话内打分支"时有区别——那种场景默认要切掉本轮（含"打分支"这条指令本身），
+    而 `--whole` 是它的显式逃生口（v2.4.9）。
     """
     # request-id 模式：用户复制 UI "请求 ID" 打分支，可能不知道源会话（跨 workspace）。
     # 若 --session 是 current（未显式指定源），先全盘反查该 request-id 属于哪个会话，
@@ -546,8 +613,29 @@ def create_fork(
             else (f"line={line_no}" if line_no else f"request_id={request_id!r}")
         )
     else:
-        cut, total = locate_last_reply(adapter, lines)
-        how = "default (previous turn's output end)"
+        # 默认模式有两种语义，判据 = **"我是不是就在被 fork 的那个会话里"**：
+        #
+        #   ① 会话内打分支（agent 通过自己的工具执行本脚本，环境里带着该会话的标识）：
+        #      要的是"上一轮输出结束" ⇒ 切在最后一条 user 消息（= 本轮"打分支"指令）之前。
+        #      **必须锚 user 消息**：本轮叙述早已写进同一份文件，锚"最后一条 assistant 文本"
+        #      会吞掉整段本轮内容，且随 agent 继续输出而前移（真实事故两例见
+        #      locate_before_current_turn 的 docstring）。
+        #   ② 外部打分支（终端执行 / 定时任务 / 显式指定别家会话）：要的是"整份复制"
+        #      ⇒ 切在文件末尾最后一条完整 assistant 回复之前（v2.1.0 起的行为）。
+        #
+        # 判据用"执行环境里的会话标识"而不是 `--session` 字面：`--session current` 从终端
+        # 执行时同样是 current（那时并没有"本轮"要排除），字面量区分不了二者。
+        running = None
+        probe = getattr(adapter, "running_session_id", None)
+        if callable(probe):
+            running = probe()
+        if running and running == src_id and not whole:
+            cut, total, note = locate_before_current_turn(adapter, lines)
+            how = f"in-session · 上一轮输出结束 · {note}"
+        else:
+            cut, total = locate_last_reply(adapter, lines)
+            why = "显式 --whole" if (whole and running == src_id) else "未检出会话内上下文"
+            how = f"whole · 最后一条完整 assistant 回复末尾（{why}）"
 
     new_id = str(uuid.uuid4())
     if name is None:

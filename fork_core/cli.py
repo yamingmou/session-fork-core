@@ -25,7 +25,7 @@ if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被�
 from . import available, create_fork, get_adapter, list_forks
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.8"
+VERSION = "2.4.9"
 
 
 def print_tree(metas) -> None:
@@ -102,6 +102,9 @@ def _main(argv=None) -> None:
     ap.add_argument("--line", type=int, help="exact 1-based split line (alternative to --match)")
     ap.add_argument("--request-id", help="requestId from product UI 'Copy Request ID' (most precise)")
     ap.add_argument("--name", default=None, help="branch name (default: auto from topic)")
+    ap.add_argument("--whole", action="store_true",
+                    help="默认模式下强制「整份复制」（含当前未完成回合的叙述）；"
+                         "只在会话内打分支时有区别——那种场景默认要切掉本轮（含本指令本身）")
     ap.add_argument("--dry-run", action="store_true", help="only locate & report, write nothing")
     ap.add_argument("--list", action="store_true", dest="list_branches", help="list branches in current workspace")
     ap.add_argument("--tree", action="store_true", dest="tree", help="show fork lineage as a tree (with --list)")
@@ -160,6 +163,7 @@ def _main(argv=None) -> None:
         name=args.name,
         dry_run=args.dry_run,
         backups_dir=adapter.backups_dir(),
+        whole=args.whole,
     )
 
     print(f"Source   : {r.src_id}  ({r.transcript_path})")

@@ -7,7 +7,7 @@ display_name_en: Session Fork
 description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。当你说"打分支""会话分叉""把这个任务复制成新分支""以某条回复为界新建对话""并行试几条路""把对话截断复制"，或提到 fork this session / branch this task 时使用。底层为 fork-core 通用引擎，跨产品可用。
 description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。注意：分叉复制的是会话上下文，工作区产物不会跟着回退——除非产物自身有版本记录（如 git），否则只有当前最终态。
 description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running. Note that a fork copies the session context only; workspace artifacts are not rolled back — unless they are version-controlled (e.g. git), only their final state exists.
-version: 2.4.8
+version: 2.4.9
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, claude-code, codex, hermes, openclaw, pi-coding-agent, session, fork, conversation, task, 会话分叉, 打分支, 任务分叉, 并行探索, 办公效率, 会话管理, 对话管理, 效率]
@@ -215,8 +215,13 @@ session-fork/
 4. 跑 `--dry-run` 验证定位正确后，再正式执行。
 
 **默认模式规则（仅当用户完全没提断点时）：**
-- 截断点 = 上一轮对话的输出结束（用户最后一条 user 消息之前的最后一条完整 assistant 回复）；
-- 脚本自动定位，`--dry-run` 验证即可。
+- **会话内打分支**（你自己就是执行者，脚本跑在被 fork 的那个会话里）：
+  截断点 = **上一轮对话的输出结束**（用户最后一条 user 消息之前的最后一条完整 assistant 回复）。
+  本轮"打分支"这条指令与你此刻的叙述**都不进分支**。
+- **从外部打分支**（人在终端执行、或显式指定另一个会话）：截断点 = **整份复制**到文件末尾最后一条完整 assistant 回复（此时没有"本轮"要排除）。
+- 两种语义由脚本按"执行环境里有没有本次会话的标识"自动判定，**不需要你指定**；
+  `--dry-run` 会打印走了哪一种（`in-session` / `whole`）以及锚在哪一行、锚点原文是什么——**照它核一遍再正式执行**。
+- 要覆盖判定结果，只在会话内才需要：加 **`--whole`** 强制整份复制。
 
 ### Step 3 — 执行创建（用脚本，勿手写）
 
@@ -320,8 +325,12 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
 
 ## 关键坑位
 
-1. **用户说了断点 → 必须用 --match/--line，绝对不能用默认模式**：默认模式找的是"最后一条 assistant 回复"（文件末尾），不是用户指定的中间位置。曾因用默认模式执行"截断到 XXX 产生处"的指令，导致分支包含了不该有的后续对话（多出 13-22 行），需要事后用 --fix 修复。
-2. **默认截断点 = 上一轮对话输出结束**：用户只说"打分支"没指定断点时，默认截到用户最后一条消息之前最后一条完整 assistant 回复的末尾（脚本默认模式自动定位，dry-run 验证即可）。
+1. **用户说了断点 → 必须用 --match/--line，绝对不能用默认模式**：默认模式只回答"这一轮之前/整份"两种问题，**不是**用户指定的中间位置。曾因用默认模式执行"截断到 XXX 产生处"的指令，导致分支包含了不该有的后续对话（多出 13-22 行），需要事后用 --fix 修复。
+2. **默认截断点是两种语义，由脚本自动判定**（v2.4.9 起）：
+   - **会话内打分支**（最常见：你在对话里说"打分支"，由 agent 执行脚本）→ 切在**上一轮输出结束**（最后一条 user 消息的完整回复末尾）。本轮指令与叙述不进分支。
+   - **从外部执行**（终端、定时任务、显式指定别家会话）→ **整份复制**到末尾最后一条完整 assistant 回复。
+   - ⚠️ **不要** 在会话内试图自己判断"上一轮结束在哪"：**本轮你自己的叙述已经在同一份文件里**，按"最后一条 assistant 文本"看必然看到的是自己。以 `--dry-run` 打印的锚点为准（会打出行号与锚点原文）。要强制整份：`--whole`。
+   - 历史教训（v2.1.0 → v2.4.8 一直存在，2026-09-15 定位并修复）：默认模式只做"全文件倒扫最后一条 assistant 文本"，在会话内打分支时会**吞掉整段本轮内容**（真实两例多吞 19 / 28 行，含"打分支"这条指令本身），且切点随 agent 继续说话而前移（dry-run 报 18778、实跑写 18782）——执行者据此以为切对了。根因是 v2.1.0 为支持"分支再 fork 整份复制"删掉了锚定 user 消息的实现，把主用例一起改坏。
 3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `arguments` / `argumentsDisplayText` / `toolResult.renderer.value` / `error.message` 等字段都会出现旧 id。v2.4.3 起使用**递归 id 替换**（覆盖全部可读字段，仅 rawContent/rawResponse 等原始内容黑名单不碰）；该替换在**引擎层统一实现，所有产品一致**（早期只在 WorkBuddy / Claude Code 上验证过）。实测一次打分支替换 2557 处。
 4. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
 <!--WBS:-->5. **WorkBuddy 会追加消息到分支文件**（**这条只对 WorkBuddy 成立，不要套到其他产品**）：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户手动 `chmod 444`），已有分支可用 `--fix` 修复（**仅 workbuddy**）。<!--:WBS-->
@@ -370,4 +379,4 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
 
 ## 变更历史
 
-见仓库根 **`CHANGELOG.md`**（每版按：价值 / 实现 / 修改 / 检查）。本文件只留「怎么执行」——把历史塞进每次执行都要读的文档里，是噪音也是成本。当前版本：**2.4.8**。
+见仓库根 **`CHANGELOG.md`**（每版按：价值 / 实现 / 修改 / 检查）。本文件只留「怎么执行」——把历史塞进每次执行都要读的文档里，是噪音也是成本。当前版本：**2.4.9**。

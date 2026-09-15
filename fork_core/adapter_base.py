@@ -47,6 +47,33 @@ class TranscriptionAdapter:
         """
         return None
 
+    def running_session_id(self) -> Optional[str]:
+        """**执行本脚本的进程所处的会话 id** —— 即"我是不是就在某个会话里面"。
+
+        为什么需要这个信号（v2.4.9 引入，2026-09-15）：
+        默认截断点有两种语义，且**同一行命令、同一个 `--session current`** 下二者都会出现
+        （agent 在自己的会话里打分支 vs 人从终端打分支），靠命令行字面量区分不了。
+        唯一确定性的判据是"执行环境里有没有本次会话的标识"：
+          - 返回具体 id ⇒ 本次调用发生在**某个会话内部** ⇒ 默认截断点取"上一轮输出结束"
+            （切在最后一条 user 消息之前，不含本次"打分支"指令与本轮叙述）；
+          - 返回 None   ⇒ 外部执行，没有"本轮"要排除 ⇒ 退回"整份复制"语义（旧行为）。
+
+        默认实现读 Claude Code / WorkBuddy 系在执行环境里留下的会话标识
+        （`CLAUDE_SESSION_ID`；`BAGGAGE` 里的 `codebuddy.session_id=<id>`）。
+        其他产品若无此信号 → None（引擎退回整份语义，**行为不变**）；有等价信号的自行覆盖。
+        """
+        for key in ("CLAUDE_SESSION_ID", "CODEBUDDY_SESSION_ID"):
+            v = os.environ.get(key)
+            if v and v.strip():
+                return v.strip()
+        # BAGGAGE=codebuddy.session_id=<id>,codebuddy.conversation_request_id=<id>,…
+        for part in (os.environ.get("BAGGAGE") or "").split(","):
+            if part.startswith("codebuddy.session_id="):
+                v = part.split("=", 1)[1].strip()
+                if v:
+                    return v
+        return None
+
     # ------------------------------------------------------------------
     # B. 消息判定（供通用截断点定位逻辑使用）
     # ------------------------------------------------------------------

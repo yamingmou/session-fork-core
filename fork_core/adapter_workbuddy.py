@@ -45,6 +45,16 @@ class WorkBuddyAdapter(TranscriptionAdapter):
     def resolve_session(self, session_ref: str) -> str:
         if session_ref != "current":
             return session_ref
+        # ① 首选**执行环境的会话标识**：`current` 的本义是"我正在其中的那个会话"，
+        #    而下面的 SQL 只是"最近一个 status='working' 的会话"——并行会话 / 新开会话
+        #    都会让它指错（2026-09-15 复核）。环境标识命中且该会话确有 transcript 才采纳；
+        #    没有 transcript 说明是过期/伪造标识，退回 ②，不拿它去撞后面的 "not found"。
+        rid = self.running_session_id()
+        if rid:
+            p, _ = self.find_transcript(rid)
+            if p:
+                return rid
+        # ② 退回产品存储（人从终端执行、无会话上下文时的原有路径）
         db = self._connect()
         try:
             cur = db.cursor()

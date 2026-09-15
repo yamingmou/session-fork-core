@@ -528,3 +528,130 @@ assert _dr.cut == 2, "dry-run 应报截断点"
 print(f"✓ dry_run 正常（截断 L{_dr.cut}，不崩溃）")
 shutil.rmtree(_dr_tmp)
 print("\n✅ WorkBuddy adapter 全部测试通过（含 dry_run/原子性/回滚/真库体检）")
+
+# ============================================================
+# 16. 默认截断点两种语义（v2.4.9）——判据 = "我是否就在被 fork 的那个会话里"
+#
+# 真实事故（2026-09-15，两例）：agent 在自己的会话里执行 `--session current` 打分支，
+# 切点落在**本轮自己的叙述**上，分支多吞整段本轮内容（含"打分支"这条指令本身）：
+#   · 3ccebc53（源 ec48e1ae）：实切 L18782，应为 L18763 —— 多吞 19 行；
+#   · 5df71252（源 d6af6ce6）：实切 L8452，应为 L8424 —— 多吞 28 行。
+# 且切点漂移：同一轮内 dry-run 报 18778、实跑写 18782（执行者据此"以为"截对了）。
+# 根因 = v2.1.0 提交 82df3a5 删掉了"锚在最后一条 user 消息之前"的 4 行，只留全文件倒扫
+# （那次改动是为了支持"分支再 fork 时整份复制"—— 两种语义都合法，故拆成两个函数分派）。
+# ============================================================
+import fork_core.adapter_workbuddy as _wb6
+from fork_core.engine import (
+    locate_last_reply as _llr,
+    locate_before_current_turn as _lbct,
+    create_fork as _cf6,
+)
+
+_sem_tmp = _tf.mkdtemp(prefix="wb-sem-")
+_wb6.DB_PATH = os.path.join(_sem_tmp, "workbuddy.db")
+_wb6.PROJECTS_DIR = os.path.join(_sem_tmp, "projects")
+_wb6.LINEAGE_PATH = os.path.join(_sem_tmp, "fork.lineage.json")
+os.makedirs(os.path.join(_wb6.PROJECTS_DIR, "Users-x-test"))
+_sem_src = "SEM-0000-0000-0000-000000000001"
+_sem_newer = "SEM-0000-0000-0000-000000000002"   # created_at 更大 → SQL 会选它
+
+
+def _mk_session(sid, created_at):
+    c = sqlite3.connect(_wb6.DB_PATH)
+    c.execute("""CREATE TABLE IF NOT EXISTS sessions (id TEXT, cwd TEXT NOT NULL,
+        user_id TEXT NOT NULL, title TEXT, custom_title TEXT,
+        status TEXT NOT NULL DEFAULT 'Pending', created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL, deleted_at INTEGER, is_playground INTEGER NOT NULL DEFAULT 0,
+        last_activity_at INTEGER)""")
+    c.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,is_playground)"
+              " VALUES (?,?,?,?,?,?,?)", (sid, "/tmp", "u", "working", created_at, created_at, 0))
+    c.commit(); c.close()
+
+
+def _write_session(sid, rows):
+    with open(os.path.join(_wb6.PROJECTS_DIR, "Users-x-test", sid + ".jsonl"), "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+
+_mk_session(_sem_src, 1000)
+_mk_session(_sem_newer, 2000)   # 更"新"的 working 会话：考 resolve_session 会不会认错
+
+# 事故形状：上一轮完整收尾(L2) + 本轮指令(L3) + 本轮叙述(L7)
+_mk_user = lambda t: {"type": "message", "role": "user", "content": [{"type": "input_text", "text": t}]}
+_mk_asst = lambda t: {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": t}]}
+_write_session(_sem_src, [
+    _mk_user("第一轮的问题"),                                        # L1
+    _mk_asst("第一轮的完整回答" + "x" * 200),                        # L2 ← 正确切点
+    _mk_user("打分支"),                                             # L3 ← 本轮指令
+    {"type": "reasoning", "text": "本轮思考"},                       # L4
+    {"type": "function_call", "name": "bash", "arguments": "{}"},   # L5
+    {"type": "function_call_result", "output": {"text": "ok"}},     # L6
+    _mk_asst("正在打分支：先看引擎版本…"),                            # L7 ← 旧实现切在这
+])
+
+_a6 = _wb6.WorkBuddyAdapter()
+_lines6 = _a6.read_lines(os.path.join(_wb6.PROJECTS_DIR, "Users-x-test", _sem_src + ".jsonl"))
+
+# 16a. 两个定位函数的语义差异（这正是 bug 的机理）
+assert _llr(_a6, _lines6) == (7, 7), "整份语义应切在末条 assistant 文本（L7）"
+_cut6, _tot6, _note6 = _lbct(_a6, _lines6)
+assert (_cut6, _tot6) == (2, 7), f"in-session 语义应切在上一轮结束（L2），实为 L{_cut6}"
+assert "L3" in _note6 and "打分支" in _note6, f"note 应指明锚点行与原文：{_note6}"
+print(f"✓ 定位语义: 整份→L7（吞本轮） / in-session→L2（正确） · {_note6}")
+
+# 16b. 默认模式分派：无会话上下文 → 整份（旧行为，不回归）
+assert _a6.running_session_id() != _sem_src, "测试环境不应自称在被 fork 的会话里"
+_r_whole = _cf6(_a6, _sem_src, name="T", dry_run=True,
+                backups_dir=os.path.join(_sem_tmp, "bk"))
+assert _r_whole.cut == 7, f"无会话上下文应保持整份语义（L7），实为 L{_r_whole.cut}"
+assert "whole" in _r_whole.how, _r_whole.how
+print(f"✓ 默认模式(无会话上下文): cut=L{_r_whole.cut} · {_r_whole.how}")
+
+# 16c. 默认模式分派：**我就在该会话里** → 上一轮输出结束（修复点）
+os.environ["CLAUDE_SESSION_ID"] = _sem_src
+try:
+    assert _a6.running_session_id() == _sem_src
+    _r_in = _cf6(_a6, _sem_src, name="T", dry_run=True,
+                 backups_dir=os.path.join(_sem_tmp, "bk"))
+    assert _r_in.cut == 2, f"会话内打分支应切在上一轮结束（L2），实为 L{_r_in.cut}"
+    assert "in-session" in _r_in.how and "打分支" in _r_in.how, _r_in.how
+    print(f"✓ 默认模式(会话内): cut=L{_r_in.cut} · {_r_in.how}")
+
+    # 16d. resolve_session('current') 必须认"执行环境的会话"，而不是"最新的 working 会话"
+    assert _a6.resolve_session("current") == _sem_src, \
+        "current 应解析为执行环境所在会话（最新 working 是 …0002，会指错）"
+    print("✓ resolve_session(current): 认执行环境会话，不误取最新的 working 会话")
+
+    # 16e. 标识过期（环境里的会话已无 transcript）→ 退回存储，不拿着它去撞 "not found"
+    os.environ["CLAUDE_SESSION_ID"] = "NOT-EXIST-0000-0000-000000000000"
+    assert _a6.running_session_id() == "NOT-EXIST-0000-0000-000000000000"
+    assert _a6.resolve_session("current") == _sem_newer, "过期标识应回退到产品存储"
+    print("✓ resolve_session(current): 过期标识回退存储（不抛 not found）")
+finally:
+    os.environ.pop("CLAUDE_SESSION_ID", None)
+
+# 16f. 退化情形：无 user 消息 / 单轮会话 → 明确退回整份语义（不静默、不报错）
+_sem2 = "SEM-0000-0000-0000-000000000003"
+_write_session(_sem2, [{"type": "reasoning"}, _mk_asst("只有一条回复")])
+_l2 = _a6.read_lines(os.path.join(_wb6.PROJECTS_DIR, "Users-x-test", _sem2 + ".jsonl"))
+_c2, _t2, _n2 = _lbct(_a6, _l2)
+assert (_c2, _t2) == (2, 2) and "无 user 消息" in _n2, (_c2, _n2)
+
+_sem3 = "SEM-0000-0000-0000-000000000004"
+_write_session(_sem3, [_mk_user("刚问完"), _mk_asst("刚答完")])
+_l3 = _a6.read_lines(os.path.join(_wb6.PROJECTS_DIR, "Users-x-test", _sem3 + ".jsonl"))
+_c3, _t3, _n3 = _lbct(_a6, _l3)
+assert (_c3, _t3) == (2, 2) and "单轮会话" in _n3, (_c3, _n3)
+
+# ⚠️ 单轮会话在"会话内"必须是**整份**：用户刚发话、助手刚答完，这一刻要打分支
+#    （没有"本轮要排除"的语义落点），退回整份 = 保留全部内容，是正确的兜底。
+os.environ["CLAUDE_SESSION_ID"] = _sem3
+try:
+    _r3 = _cf6(_a6, _sem3, name="T", dry_run=True, backups_dir=os.path.join(_sem_tmp, "bk"))
+    assert _r3.cut == 2, _r3.cut
+finally:
+    os.environ.pop("CLAUDE_SESSION_ID", None)
+print("✓ 退化兜底: 无 user 消息 / 单轮会话 → 明确退回整份（有 note，不静默）")
+shutil.rmtree(_sem_tmp)
+print("\n✅ 默认截断点语义测试通过（in-session vs whole 分派 + resolve_session 归属 + 退化兜底）")
