@@ -10,8 +10,10 @@
 用法：
     python3 scripts/build_skill.py              # 生成：仓库根 SKILL.md（WB 版）+ dist/SKILL.fork.md（fork 版）
     python3 scripts/build_skill.py --check      # 只校验：产物与源是否一致（不一致即 exit 1，供发布前必检）
-    python3 scripts/build_skill.py --pack       # 生成 + 打包 dist/clawhub/session-fork/（skills 目录渠道可直接上架）
-                                                #   打包后会真跑一遍：入口可独立运行、6 个 adapter 都在
+    python3 scripts/build_skill.py --pack       # 生成 + 打两个渠道包：
+                                                #   dist/wb/session-fork/       ← WorkBuddy 开放平台 / SkillHub
+                                                #   dist/clawhub/session-fork/  ← ClawHub / 任意产品 skills 目录
+                                                #   打包后逐个真跑：入口能脱离仓库运行、6 个 adapter 都在
 
 源文件 skill/SKILL.src.md 的标记约定（渲染时会被剥掉，不会出现在产物里）：
     {{FORK}}                        命令入口占位，按渠道替换（WB=绝对路径 / fork=`fork`）
@@ -35,7 +37,6 @@ REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "skill" / "SKILL.src.md"
 OUT_WB = REPO / "SKILL.md"
 OUT_FORK = REPO / "dist" / "SKILL.fork.md"
-PACK_DIR = REPO / "dist" / "clawhub" / "session-fork"
 
 LONG_ENTRY = "python3 ~/.workbuddy/skills/session-fork/scripts/create_branch.py"
 FORK_ENTRY = "fork"
@@ -66,62 +67,72 @@ def render(text: str, variant: str) -> str:
     return text
 
 
-def pack(fork_text: str) -> int:
-    """把 fork 版打成可直接上架的技能包（skills 目录渠道 / ClawHub）。
-
-    结构（平台约束：最多两级目录）：
-        session-fork/SKILL.md
-        session-fork/LICENSE
-        session-fork/scripts/create_branch.py     ← 唯一入口，自定位到技能根
-        session-fork/fork_core/*.py
-    打完**立刻真跑一遍**验证：包能独立于仓库运行、6 个 adapter 都在。
-    """
+def _pack_one(label: str, dirname: str, skill_text: str) -> int:
+    """打一个渠道包：dist/<dirname>/session-fork/{SKILL.md,scripts/create_branch.py,fork_core/*.py}"""
     import shutil
-    import subprocess
 
-    if PACK_DIR.exists():
-        shutil.rmtree(PACK_DIR)
-    (PACK_DIR / "scripts").mkdir(parents=True)
-    (PACK_DIR / "fork_core").mkdir(parents=True)
-
-    (PACK_DIR / "SKILL.md").write_text(fork_text, encoding="utf-8")
-    shutil.copy2(REPO / "scripts" / "create_branch.py", PACK_DIR / "scripts")
+    out = REPO / "dist" / dirname / "session-fork"
+    if out.exists():
+        shutil.rmtree(out)
+    (out / "scripts").mkdir(parents=True)
+    (out / "fork_core").mkdir(parents=True)
+    (out / "SKILL.md").write_text(skill_text, encoding="utf-8")
+    shutil.copy2(REPO / "scripts" / "create_branch.py", out / "scripts")
     for p in sorted((REPO / "fork_core").glob("*.py")):
-        shutil.copy2(p, PACK_DIR / "fork_core")
-    if (REPO / "LICENSE").exists():
-        shutil.copy2(REPO / "LICENSE", PACK_DIR)
+        shutil.copy2(p, out / "fork_core")
+    # ⚠️ 不放 LICENSE：SkillHub 的 publish 会以「不允许的文件类型: LICENSE」拒收（无扩展名）。
+    #    许可在 SKILL.md frontmatter 的 `license: MIT` 里已声明，包内不需要副本。
+    #    （曾于 2026-09-15 首次发布 v2.4.8 时踩到：整包 400 被拒，摘掉 LICENSE 后才 accepted。）
 
-    files = sorted(p.relative_to(PACK_DIR).as_posix() for p in PACK_DIR.rglob("*") if p.is_file())
-    print(f"✓ 已打包 {PACK_DIR}")
-    for f in files:
-        print(f"    {f}")
-
+    files = sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
+    print(f"✓ {label} → dist/{dirname}/session-fork/（{len(files)} 个文件）")
     deep = [f for f in files if len(f.split("/")) > 2]
     if deep:
-        print(f"✗ 超过两级目录（平台约束）：{deep}")
+        print(f"  ✗ 超过两级目录（平台约束）：{deep}")
+        return 1
+    return 0
+
+
+def pack(wb_text: str, fork_text: str) -> int:
+    """把两份产物各打成一个可直接上架的技能包，并**逐个真跑自检**。
+
+    · dist/wb/session-fork/       ← WorkBuddy 开放平台 / SkillHub（SKILL.md = 产品感知的 WB 版）
+    · dist/clawhub/session-fork/  ← ClawHub / 任意产品的 skills 目录（SKILL.md = fork 版，命令自带 --adapter）
+
+    结构（平台约束：最多两级目录）：SKILL.md · scripts/create_branch.py · fork_core/*.py（共 15 文件，不含 LICENSE——见 _pack_one 说明）
+    create_branch.py 自定位到技能根，所以包能脱离仓库独立运行。
+    """
+    import subprocess
+
+    if _pack_one("WorkBuddy / SkillHub", "wb", wb_text):
+        return 1
+    if _pack_one("ClawHub / skills 目录", "clawhub", fork_text):
         return 1
 
-    entry = PACK_DIR / "scripts" / "create_branch.py"
     py = sys.executable
-    print("\n  打包后真跑自检：")
-    try:
+    print("\n  打包后真跑自检（在无关 cwd 下执行，验证自定位）：")
+    for label, dirname in (("WB 包", "wb"), ("fork 包", "clawhub")):
+        entry = REPO / "dist" / dirname / "session-fork" / "scripts" / "create_branch.py"
         r = subprocess.run([py, str(entry), "--version"], capture_output=True, text=True, cwd="/tmp")
-        ok_ver = r.returncode == 0
-        print(f"    --version      → {r.stdout.strip() or r.stderr.strip()}")
-        if not ok_ver:
-            print("✗ 打包后的入口跑不起来")
+        ver = r.stdout.strip() or r.stderr.strip()
+        if r.returncode != 0:
+            print(f"    ✗ {label} 入口跑不起来：{ver}")
             return 1
+        bad = []
         for a in ("workbuddy", "claude-code", "pi", "openclaw", "codex", "hermes"):
             rr = subprocess.run([py, str(entry), "--adapter", a, "--help"],
                                 capture_output=True, text=True, cwd="/tmp")
             if rr.returncode != 0:
-                print(f"✗ --adapter {a} 在包里不可用")
-                return 1
-        print("    6 个 adapter   → 全部可用")
-        n_missing = fork_text.count("--adapter <你的产品>")
-        print(f"    文档内 --adapter 覆盖 → {n_missing} 处")
-    except Exception as e:  # noqa: BLE001
-        print(f"✗ 自检异常：{e}")
+                bad.append(a)
+        if bad:
+            print(f"    ✗ {label} 有 adapter 不可用：{bad}")
+            return 1
+        print(f"    {label:7s} {ver:12s} 6 个 adapter 全部可用")
+
+    n = fork_text.count("--adapter <你的产品>")
+    print(f"\n  fork 包文档内 --adapter 覆盖 → {n} 处")
+    if n == 0:
+        print("  ✗ fork 包文档一条 --adapter 都没有——读者会操作错产品的库")
         return 1
     return 0
 
@@ -178,7 +189,7 @@ def main() -> int:
 
     if "--pack" in sys.argv:
         print()
-        return pack(fork)
+        return pack(wb, fork)
     return 0
 
 
