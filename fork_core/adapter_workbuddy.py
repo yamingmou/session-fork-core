@@ -15,7 +15,7 @@ import os
 import sqlite3
 
 from .models import SessionMeta, VerifyItem
-from .adapter_base import TranscriptionAdapter
+from .adapter_base import TranscriptionAdapter, dumps_safe
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
@@ -219,7 +219,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
         with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(json.dumps(o, ensure_ascii=False) for o in lines) + "\n")
+            f.write("\n".join(dumps_safe(o) for o in lines) + "\n")
 
     # 原始内容键：安全审查承诺不改写（API 原始响应/原始内容），其余字段递归全替换
     _RAW_KEYS = {"rawContent", "rawResponse", "raw", "originalContent", "original"}
@@ -366,7 +366,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         # 原子写（2026-09-03 复核）：先写临时文件再 os.replace，避免并发/中断留半文件
         tmp = LINEAGE_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(dumps_safe(data, indent=2))
         os.replace(tmp, LINEAGE_PATH)
 
     def _lineage_add(self, new_id: str, name: str, parent_id: str, at_seq: int, cwd: str) -> None:

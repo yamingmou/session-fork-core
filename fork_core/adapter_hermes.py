@@ -55,7 +55,7 @@ import sqlite3
 import time
 import uuid
 
-from .adapter_base import TranscriptionAdapter
+from .adapter_base import TranscriptionAdapter, dumps_safe
 from .models import SessionMeta, VerifyItem
 
 #: 本适配器写入时认得的 schema 版本（实测 v0.21.2 = 30）。高于此值即拒绝写。
@@ -549,7 +549,7 @@ class HermesAdapter(TranscriptionAdapter):
         os.makedirs(os.path.dirname(self.LINEAGE_PATH) or ".", exist_ok=True)
         tmp = self.LINEAGE_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(dumps_safe(data, indent=2))
         os.replace(tmp, self.LINEAGE_PATH)
 
     def list_branches(self, cwd: str | None = None) -> list[SessionMeta]:

@@ -60,6 +60,7 @@ import shutil
 import time
 import uuid
 
+from .adapter_base import dumps_safe
 from .adapter_pi import PiAdapter, LINEAGE_NAME
 from .models import SessionMeta, VerifyItem
 
@@ -144,7 +145,7 @@ class OpenClawJsonlAdapter(PiAdapter):
                 pass
         tmp = f"{self.SESSIONS_INDEX}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(dumps_safe(data, indent=2))
         os.replace(tmp, self.SESSIONS_INDEX)
 
     def _src_index_entry(self, src_id: str) -> dict | None:

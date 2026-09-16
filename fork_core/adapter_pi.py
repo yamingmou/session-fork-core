@@ -54,7 +54,7 @@ import json
 import os
 
 from .models import SessionMeta, VerifyItem
-from .adapter_base import TranscriptionAdapter
+from .adapter_base import TranscriptionAdapter, dumps_safe
 
 HOME = os.path.expanduser("~")
 # 默认 ~/.pi/agent；OpenClaw 的 legacy 转录在 ~/.openclaw/agents/<agentId>/sessions/，
@@ -250,7 +250,7 @@ class PiAdapter(TranscriptionAdapter):
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
         with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(json.dumps(o, ensure_ascii=False) for o in lines) + "\n")
+            f.write("\n".join(dumps_safe(o) for o in lines) + "\n")
 
     def rewrite_ids(self, lines: list[dict], old_id: str, new_id: str) -> tuple[list[dict], int]:
         """只改 header.id；条目 id 原样保留（改动它会剪断 parentId 树）。
@@ -348,7 +348,7 @@ class PiAdapter(TranscriptionAdapter):
     def _write_index(self, data: dict) -> None:
         os.makedirs(self.AGENT_DIR, exist_ok=True)
         with open(self.LINEAGE_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(dumps_safe(data, indent=2))
 
     def register_branch(self, src, new_id, dst_path, name, parent_id=None, at_seq=None) -> None:
         data = self._read_index()

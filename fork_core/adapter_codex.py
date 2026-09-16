@@ -79,7 +79,7 @@ import sqlite3
 import time
 import uuid
 
-from .adapter_base import TranscriptionAdapter
+from .adapter_base import TranscriptionAdapter, dumps_safe
 from .models import SessionMeta, VerifyItem
 
 #: 转录布局
@@ -351,7 +351,7 @@ class CodexAdapter(TranscriptionAdapter):
             out.append(o)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(json.dumps(o, ensure_ascii=False) for o in out) + "\n")
+            f.write("\n".join(dumps_safe(o) for o in out) + "\n")
 
     def rewrite_ids(self, lines: list[dict], old_id: str, new_id: str) -> tuple[list[dict], int]:
         """会话 id 结构化替换。
@@ -615,7 +615,7 @@ class CodexAdapter(TranscriptionAdapter):
     def _write_index(self, data: dict) -> None:
         os.makedirs(os.path.dirname(self.LINEAGE_PATH), exist_ok=True)
         with open(self.LINEAGE_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(dumps_safe(data, indent=2))
 
     def list_branches(self, cwd: str | None = None) -> list[SessionMeta]:
         out = []

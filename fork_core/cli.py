@@ -25,7 +25,7 @@ if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被�
 from . import available, create_fork, get_adapter, list_forks
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.10"
+VERSION = "2.4.11"
 
 
 def print_tree(metas) -> None:

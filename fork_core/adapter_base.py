@@ -21,6 +21,56 @@ from typing import Any, Optional
 from .models import SessionMeta, VerifyItem
 
 
+# ----------------------------------------------------------------------
+# 序列化安全阀（2026-09-16 新增）：孤立代理致写出崩溃的**公共**修法
+# ----------------------------------------------------------------------
+def dumps_safe(obj: Any, **kwargs: Any) -> str:
+    """把对象序列化成「保证可 utf-8 写出」的 JSON 文本（行级与文件级通用）。
+
+    背景（实测，非推断）
+    -------------------
+    `json.dumps(o, ensure_ascii=False)` 产出的文本若含**孤立代理**（lone surrogate，
+    U+D800–U+DFFF；常见成因＝上游把 emoji 的代理对切开、留高丢低），则在写出时
+    （`open(..., encoding="utf-8")` 的 write，或 sqlite3 绑定 str 参数）抛：
+        UnicodeEncodeError: 'utf-8' codec can't encode character U+D83D ...
+                            surrogates not allowed
+    ⇒ **整份产物写出失败**。首次实测现场：WorkBuddy 会话
+    `~/.workbuddy/projects/.../ec48e1ae-*.jsonl:18968`（全库 158 文件 / 238,636 行中唯一一处）。
+
+    ⚠️ 实现注记（本条是自己踩出来的，2026-09-16）
+    --------------------------------------------
+    **本模块的 docstring 内不得书写单反斜杠的 u 转义**：Python 会把 docstring 里的
+    该转义序列解析成**真正的孤立代理字符**，使本模块常量带上代理 ⇒ **整个包 import 即崩**
+    （实测：加本函数时把 7 个适配器测试从全绿打成全红，由「编译 + 全量测试」当场拦住）。
+    **要表达码点请写 `U+D83D` 这类形式**，不要写反斜杠转义。
+
+    策略：保真优先 · 逐行 · 不净化
+    ------------------------------
+      · 默认 `ensure_ascii=False` —— 保持既有形态与人类可读（不改变绝大多数行的字节形态）；
+      · **仅当该对象无法 utf-8 编码时**，降级 `ensure_ascii=True`
+        —— 孤立代理在 JSON 层是**合法转义**（`\\ud83d`），`json.loads` 回读仍是同一代理
+        ⇒ **语义逐字保真**：不替换、不丢弃、不改写内容。
+      · 因此降级是**按对象局部**的：`write_branch` 逐行调用 ⇒ 只影响**含代理的那一行**
+        （实测：107.7 MB / 19,195 行的最大会话中，仅 **1 行**被降级，其余 19,194 行**逐字符相同**）；
+        而索引/谱系那类**整文件一次写出**的调用点 ⇒ 若该文件含代理，**整份文件**转义
+        （仍可往返、不丢数据，只是可读性下降——仍优于"整份写不出来"）。
+
+    有意**不用**的两条路（均实测过）
+    -------------------------------
+      · `encode('utf-8', 'surrogatepass')`：产物含 CESU-8 残片（`ed a0 bd`），
+        是**非法 UTF-8**；宿主/Node 按严格 UTF-8 读会替换为 U+FFFD ⇒ **吞字**，不保真。
+      · `encode('utf-8', 'backslashreplace')`：把代理写成**字面 6 字符**，单次写出虽可往返，
+        但一旦该文本**再经一次序列化**即退化为普通文本（不保真）⇒ 语义脆，不采用。
+    """
+    kwargs.pop("ensure_ascii", None)  # 转义策略由本函数统一决定（见上），忽略调用方同名参数
+    text = json.dumps(obj, ensure_ascii=False, **kwargs)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = json.dumps(obj, ensure_ascii=True, **kwargs)
+    return text
+
+
 class TranscriptionAdapter:
     """接口基类。子类必须实现全部方法。"""
 

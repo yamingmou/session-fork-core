@@ -57,6 +57,7 @@ import sqlite3
 import time
 import uuid
 
+from .adapter_base import dumps_safe
 from .adapter_openclaw import OpenClawJsonlAdapter, BRANCH_KEY_PREFIX
 from .models import SessionMeta, VerifyItem
 
@@ -235,6 +236,12 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         return [json.loads(r[0]) for r in rows]
 
     def read_raw(self, ref: str) -> str:
+        """读出「每行一条 JSON」的等价文本，**仅供引擎的行数 / 解析 / 残留校验复用**。
+
+        ⚠️ 这是**读侧**：只在内存里比较，从不 `encode`、从不落盘 ⇒ 含孤立代理也不会崩，
+        故**有意**不用 `dumps_safe`（那是**写出点**才需要的安全阀）。
+        **不要**把本方法的返回值直接写盘——要写盘请改走 `dumps_safe`。
+        """
         lines = self.read_lines(ref)
         return "\n".join(json.dumps(o, ensure_ascii=False) for o in lines) + ("\n" if lines else "")
 
@@ -309,7 +316,7 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         for seq, obj in enumerate(lines):
             cur.execute(
                 "INSERT INTO transcript_events (session_id,seq,event_json,created_at) VALUES (?,?,?,?)",
-                (new_id, seq, json.dumps(obj, ensure_ascii=False), now_ms),
+                (new_id, seq, dumps_safe(obj), now_ms),
             )
         # 3/4. 反规范化索引 + 投影行：随事件裁剪
         dup("transcript_event_identities", {"session_id": new_id}, extra=f"seq < {cut}")
@@ -340,7 +347,7 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
             entry.update({"sessionId": new_id, "updatedAt": now_ms, "sessionStartedAt": now_ms})
             d.update({
                 "session_key": new_key, "current_session_id": new_id,
-                "entry_json": json.dumps(entry, ensure_ascii=False),
+                "entry_json": dumps_safe(entry),
                 "entry_valid": 0, "updated_at": now_ms, "created_at": now_ms,
                 "fork_source_session_key": src_node["session_key"],
                 "fork_source_session_id": src_id,

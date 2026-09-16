@@ -16,7 +16,7 @@ import json
 import os
 
 from .models import SessionMeta, VerifyItem
-from .adapter_base import TranscriptionAdapter
+from .adapter_base import TranscriptionAdapter, dumps_safe
 
 HOME = os.path.expanduser("~")
 #: 根目录支持隔离：`CLAUDE_CONFIG_DIR` 是 Claude Code 官方认可的配置根覆盖变量
@@ -113,7 +113,7 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
         with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(json.dumps(o, ensure_ascii=False) for o in lines) + "\n")
+            f.write("\n".join(dumps_safe(o) for o in lines) + "\n")
 
     # 原始内容键：不改写（API 原始响应/原始内容），其余字段递归全替换
     _RAW_KEYS = {"rawContent", "rawResponse", "raw", "originalContent", "original"}
@@ -185,7 +185,7 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
     def _write_index(self, data: dict) -> None:
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         with open(BRANCH_INDEX, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(dumps_safe(data, indent=2))
 
     def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None) -> None:
         data = self._read_index()
