@@ -1,3 +1,4 @@
+# role: adapter:openclaw（JSONL 后端）— 产品适配器，不含引擎逻辑
 """fork_core.adapter_openclaw — OpenClaw 适配器（pi 血缘 + 产品索引）。
 
 一手依据（2026-09-14 真机取证，非推测，可复跑核对）：

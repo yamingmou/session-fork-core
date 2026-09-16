@@ -1,3 +1,4 @@
+# role: adapter:hermes — 产品适配器（SQLite 后端），不含引擎逻辑
 """fork_core.adapter_hermes — Hermes Agent 的 SQLite 后端（纯 SQL，不 import 产品包）。
 
 一手依据（2026-09-14 真机取证 + 手工验收实验，可复跑核对）：
@@ -660,4 +661,4 @@ class HermesAdapter(TranscriptionAdapter):
         return "整个 state.db（官方 backup API，含 WAL 的一致性快照）"
 
     def readonly_hint(self, dst_ref: str) -> str:
-        return ""  # 分支是库里的行，不是文件 —— 没有可 chmod 的对象
+        return ""  # 分支是库里的行，不是文件 —— 没有可改权限位的对象

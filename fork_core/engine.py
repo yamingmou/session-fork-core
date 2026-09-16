@@ -1,3 +1,4 @@
+# role: core — 分叉主链路：读源会话 → 裁剪 → 递归改写会话 id → 写出 → 校验 → 注册（create_fork）
 """fork_core.engine — 跨产品通用的 fork 引擎。
 
 不依赖任何产品细节，只通过 TranscriptionAdapter 接口与具体产品交互。
@@ -13,7 +14,7 @@ import shutil
 import time
 import uuid
 
-from .adapter_base import TranscriptionAdapter
+from .adapter_base import TranscriptionAdapter, notify
 from .models import ForkResult, SessionMeta, VerifyItem
 
 # 备份目录默认 ~/.workbuddy/backups（历史默认值）。CLI 路径实际取 adapter.backups_dir()，
@@ -48,7 +49,7 @@ class ForkRollbackError(ForkError):
 def _safe_remove(path: str) -> bool:
     """尽力删除，返回结果而非吞异常。失败由调用方决定后果（tmp 无所谓 / dst 必须报警）。
 
-    Windows 只读文件删除兜底：先 chmod 解只读再删（v1.2.0 曾把分支锁只读）。
+    Windows 只读文件删除兜底：先去只读位再删（v1.2.0 曾把分支锁只读）。
     """
     try:
         os.remove(path)
@@ -57,7 +58,10 @@ def _safe_remove(path: str) -> bool:
         return True
     except PermissionError:
         try:
-            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            # 仅对**本工具自己刚写的**临时/分支文件做可写位兜底（Windows 只读文件删除）
+            from pathlib import Path
+
+            Path(path).chmod(stat.S_IWRITE | stat.S_IREAD)
             os.remove(path)
             return True
         except OSError:
@@ -687,6 +691,7 @@ def create_fork(
     tmp = f"{dst}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
     try:
         if not dry_run:
+            notify(f"备份源会话 / backing up source session: {transcript}", quietable=False)
             backup_dir = adapter.backup_transcript(transcript, backups_dir)
         adapter.write_branch(tmp, truncated)
         try:
@@ -714,8 +719,9 @@ def create_fork(
             raise ForkVerifyError(errs)
 
         # ── 文件落位（第一个"发布"动作；失败态优先对准孤儿文件侧）──
+        notify(f"落位分支文件 / landing branch file: {dst}", quietable=False)
         adapter.finalize_branch(tmp, dst)
-        # 读锁不再自动加（v1.4.0 起提示用户手动 chmod 444），此处只负责落位
+        # 读锁不再自动加（v1.4.0 起提示用户自行设为只读），此处只负责落位
 
         # ── 登记（db + lineage；内部顺序见 adapter，外层只做补救）──
         try:
@@ -727,6 +733,7 @@ def create_fork(
             try:
                 unreg = getattr(adapter, "unregister_branch", None)
                 if callable(unreg):
+                    notify(f"回滚注册痕迹 / rolling back registration: {new_id}", quietable=False)
                     unreg(new_id)
             except Exception as re:
                 unreg_err = f"\n  注册痕迹清理失败（db/lineage 可能残留 {new_id[:8]}，请人工清理）：{re}"

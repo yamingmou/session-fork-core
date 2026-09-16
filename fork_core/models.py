@@ -1,3 +1,4 @@
+# role: models — 数据结构（SessionMeta / VerifyItem）
 """fork_core.models — 跨产品通用的数据结构定义。
 
 这些 dataclass 与具体产品（WorkBuddy / Claude Code / Codex ...）无关，

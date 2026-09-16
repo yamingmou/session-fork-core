@@ -1,3 +1,4 @@
+# role: adapter:workbuddy — 产品适配器（存储格式翻译），不含引擎逻辑
 """fork_core.adapter_workbuddy — WorkBuddy 产品适配器。
 
 存储：
@@ -218,7 +219,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
-        notify(f"写入分支文件：{path}（新建，源会话不改动）")
+        notify(f"写入分支文件 / writing branch file: {path}", quietable=False)
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(dumps_safe(o) for o in lines) + "\n")
 

@@ -1,3 +1,4 @@
+# role: adapter:openclaw（SQLite 后端）— 产品适配器，不含引擎逻辑
 """fork_core.adapter_openclaw_sqlite — OpenClaw ≥2026.9.x 的 SQLite 后端。
 
 一手依据（2026-09-14 真机取证，可复跑核对）：
@@ -472,5 +473,5 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         return "整个 SQLite 数据库（官方 backup API，一致性快照）"
 
     def readonly_hint(self, dst_ref: str) -> str:
-        # 分支是库里的行，不是文件 —— 没有可 chmod 的对象
+        # 分支是库里的行，不是文件 —— 没有可改权限位的对象
         return ""

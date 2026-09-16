@@ -1,3 +1,4 @@
+# role: cli — 命令行入口（pip 安装后 fork / fork-branch）
 """fork_core.cli — 命令行入口（pip 安装后 `fork` / `fork-branch` 命令）。
 
 与 scripts/create_branch.py 共用同一套逻辑；后者保留为 WorkBuddy 技能目录
@@ -25,7 +26,7 @@ if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被�
 from . import available, create_fork, get_adapter, list_forks
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.12"
+VERSION = "2.4.13"
 
 
 def print_tree(metas) -> None:
@@ -113,7 +114,7 @@ def _main(argv=None) -> None:
     ap.add_argument("--whole", action="store_true",
                     help="默认模式下强制「整份复制」（含当前未完成回合的叙述）；"
                          "只在会话内打分支时有区别——那种场景默认要切掉本轮（含本指令本身）")
-    ap.add_argument("--dry-run", action="store_true", help="only locate & report, write nothing")
+    ap.add_argument("--dry-run", action="store_true", help="locate & validate without landing (writes only a temp file for disk-byte verification, then removes it)")
     ap.add_argument("--list", action="store_true", dest="list_branches", help="list branches in current workspace")
     ap.add_argument("--tree", action="store_true", dest="tree", help="show fork lineage as a tree (with --list)")
     ap.add_argument("--fix", metavar="SESSION_ID", help="re-truncate a branch (workbuddy only)")
@@ -253,7 +254,7 @@ def run_fix(fix_session_id: str) -> None:
     wb.write_branch(fix_path, lines[:cut])
     check = _load_lines(fix_path)
     print(f"Verify   : {len(check)} lines (was {total}, removed {total - len(check)})")
-    print(f"ℹ️  分支文件未锁定只读（**本技能不会替你修改文件权限**）。如需要，可自行设为只读，例如：chmod 444 {fix_path}")
+    print(f"ℹ️  分支文件未锁定只读（**本技能不会替你修改文件权限**）。如需要，可自行设为只读，（用你系统的方式把该文件设为只读）{fix_path}")
 
 
 def main(argv=None) -> None:

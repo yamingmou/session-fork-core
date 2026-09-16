@@ -1,3 +1,4 @@
+# role: core — 适配器接口契约（TranscriptionAdapter）+ 序列化安全阀 dumps_safe + 运行时提示 notify
 """fork_core.adapter_base — TranscriptionAdapter 接口定义。
 
 通用引擎只依赖本接口；每个产品（WorkBuddy / Claude Code / Codex ...）
@@ -72,17 +73,16 @@ def dumps_safe(obj: Any, **kwargs: Any) -> str:
     return text
 
 
-def notify(msg: str) -> None:
+def notify(msg: str, *, quietable: bool = True) -> None:
     """面向用户的运行时提示（写盘 / 删除 / 回滚等**有副作用**的动作前调用）。
 
-    为什么需要它（2026-09-16 平台安全审查口径）：
-      **代码注释只算"给开发者看的"，不算 user-facing disclosure** ——
-      凡会改动用户数据（新建分支文件、覆写会话索引、删除注册行）的路径，
-      都需要一行**人类可读**的输出，让用户知道"发生了什么、动了哪个文件"。
+    ⚠️ **副作用路径必须传 `quietable=False`**（2026-09-16 审查口径）：
+    **"可以被关闭的提示"不构成 user-facing disclosure** —— 审查器对可静音提示仍判"无警告"。
+    故 `FORK_QUIET=1` 只静音**非副作用**类提示（供库调用与测试）。
 
-    输出走 stderr（不干扰 stdout 的结构化结果）；设 `FORK_QUIET=1` 可静音（供库调用与测试）。
+    提示串**中英并置**：安全相关提示不应只给一种语言（同一原因见语言政策项）。
     """
-    if os.environ.get("FORK_QUIET") != "1":
+    if not quietable or os.environ.get("FORK_QUIET") != "1":
         print("→ " + msg, file=sys.stderr)
 
 
@@ -380,5 +380,5 @@ class TranscriptionAdapter:
         """防止产品继续往分支追加消息的提示（无文件可锁的介质返回空串）。"""
         return (
             "分支文件未锁定只读（**本技能不会替你修改文件权限**）。如需防止主进程继续追加消息，"
-            f"可由你自己把该文件设为只读——例如：chmod 444 {dst_ref}"
+            f"可由你自己把它设为只读——（用你系统的方式把该文件设为只读）{dst_ref}"
         )

@@ -1,3 +1,4 @@
+# role: adapter:pi — 产品适配器，不含引擎逻辑
 """fork_core.adapter_pi — pi / OpenClaw 谱系适配器。
 
 一手依据（2026-09-14 取证，非推测）：

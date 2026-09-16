@@ -1,3 +1,4 @@
+# role: adapter:claude-code — 产品适配器，不含引擎逻辑
 """fork_core.adapter_claude_code — Claude Code 产品适配器（验证用，不宣传）。
 
 存储：
@@ -183,7 +184,7 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         return {"branches": []}
 
     def _write_index(self, data: dict) -> None:
-        notify(f"更新旁路分支索引：{BRANCH_INDEX}（不写产品官方 schema）")
+        notify(f"更新旁路分支索引 / updating sidecar branch index: {BRANCH_INDEX}", quietable=False)
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         with open(BRANCH_INDEX, "w", encoding="utf-8") as f:
             f.write(dumps_safe(data, indent=2))

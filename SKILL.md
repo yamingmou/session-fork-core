@@ -7,14 +7,19 @@ display_name_en: Session Fork
 description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。当你说"打分支""会话分叉""把这个任务复制成新分支""以某条回复为界新建对话""并行试几条路""把对话截断复制"，或提到 fork this session / branch this task 时使用。底层为 fork-core 通用引擎，跨产品可用。
 description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。注意：分叉复制的是会话上下文，工作区产物不会跟着回退——除非产物自身有版本记录（如 git），否则只有当前最终态。
 description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running. Note that a fork copies the session context only; workspace artifacts are not rolled back — unless they are version-controlled (e.g. git), only their final state exists.
-version: 2.4.12
+version: 2.4.13
 author: OfferKuai (Offer快) Team
 license: MIT
+allowed-tools: Read, Write, Edit, Bash, Glob, Grep
+metadata: {"clawdbot":{"emoji":"🔀","requires":{"bins":["python3"]}}}
 tags: [workbuddy, claude-code, codex, hermes, openclaw, pi-coding-agent, session, fork, conversation, task, 会话分叉, 打分支, 任务分叉, 并行探索, 办公效率, 会话管理, 对话管理, 效率]
 agent_created: true
 ---
 
 <h1><img src="https://raw.githubusercontent.com/yamingmou/session-fork-core/main/logo.png" width="40" height="40" alt="Fork Logo" style="vertical-align: middle;"> Session Fork（会话分叉 · 打分支）</h1>
+
+**语言 / Language** — 本文件是**执行契约**（中文）。英文总览见 [README.en.md](https://github.com/yamingmou/session-fork-core/blob/main/README.en.md)；中文总览见 [README.md](https://github.com/yamingmou/session-fork-core/blob/main/README.md)。
+*This file is the operator contract (Chinese). For an English overview see the linked README.en.md.*
 
 把一个会话的**工作现场整体复制**成独立分支：取源会话 transcript 的前 1..截断点行 → 递归改写其中的会话 id → 写入新会话文件 → 在会话索引与谱系索引注册。原会话零改动。
 
@@ -341,7 +346,7 @@ python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw    
    - 历史缺陷（v2.1.0 → v2.4.8 一直存在，2026-09-15 定位并修复）：默认模式只做"全文件倒扫最后一条 assistant 文本"，在会话内打分支时会**吞掉整段本轮内容**（真实两例多吞 19 / 28 行，含"打分支"这条指令本身），且切点随 agent 继续说话而前移（dry-run 报 18778、实跑写 18782）——执行者据此以为切对了。根因是 v2.1.0 为支持"分支再 fork 整份复制"删掉了锚定 user 消息的实现，把主用例一起改坏。
 3. **嵌套字段旧 id 残留**：只改顶层 `sessionId` 不够——`output.text` / `arguments` / `argumentsDisplayText` / `toolResult.renderer.value` / `error.message` 等字段都会出现旧 id。v2.4.3 起使用**递归 id 替换**（覆盖全部可读字段，仅 rawContent/rawResponse 等原始内容黑名单不碰）；该替换在**引擎层统一实现，所有产品一致**（早期只在 WorkBuddy / Claude Code 上验证过）。实测一次打分支替换 2557 处。
 4. **指定模式边界**：用户引用文本可能出现在多条回复里，取最后一条；且必须确认该回复是完整收尾（下一行是 user 消息）。
-5. **WorkBuddy 会追加消息到分支文件**（**这条只对 WorkBuddy 成立，不要套到其他产品**）：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户手动 `chmod 444`），已有分支可用 `--fix` 修复（**仅 workbuddy**）。
+5. **WorkBuddy 会追加消息到分支文件**（**这条只对 WorkBuddy 成立，不要套到其他产品**）：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户自行设为只读），已有分支可用 `--fix` 修复（**仅 workbuddy**）。
 6. **快照分支特性**：复制发生在读取时刻，原会话之后的新消息不会进分支——这是正常行为，不是丢数据。
 7. **附属目录 tool-results/**：是运行时输出缓存，jsonl 已内嵌完整 function_call_result，分支**不需要**复制附属目录（或建空目录即可）。
 8. **先备份再动手**：脚本已内置备份，不要跳过。备份默认**落在你所用产品自己的目录里**——WorkBuddy `~/.workbuddy/backups`；Claude Code `~/.claude/fork-backups`；Codex `~/.codex/fork-backups`；Hermes `$HERMES_HOME/fork-backups`；pi `~/.pi/agent/fork-backups`；OpenClaw `<agent 目录>/fork-backups`。想统一改到别处：设环境变量 **`FORK_BACKUP_DIR`**（对所有产品生效）。
@@ -375,8 +380,8 @@ python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw    
 3. 产品自己的会话索引（`sessions.json` / `sessions` 表等）**新增一行**指向该分支；**写前自动备份**（`.bak.<时间戳>`）。
 
 **明确不做**：不联网、不上传任何数据、不读凭据或密钥文件、**不请求提权（不调用 `sudo` / `root`）**、不改系统配置、不安装任何东西。
-**可先验证再执行**：`--dry-run` **零写入**（只读 + 全量校验，打印 `Verify : ✅ OK` 后退出）；`--verify` 是**只读**体检。
-**关于 `chmod`**：文档中出现的 `chmod 444 <文件>` 一律是**给用户的手动建议**（要不要锁定分支文件由你决定），**本技能不会去执行它**。
+**可先验证再执行**：`--dry-run` **不落位、不登记、不改源会话**——它会写一个临时文件用于**磁盘字节校验**（校验完即清理），所以运行处需要写权限；`--verify` 是**只读**体检。
+**文件权限**：分支文件要不要设为只读，**完全由你自己决定**；本技能只**建议**、不代为修改。
 **语言**：本技能面向中文用户编写；同时提供英文字段 `display_name_en` / `description_en`（英文说明见仓库 [README.en.md](https://github.com/yamingmou/session-fork-core/blob/main/README.en.md)）。
 
 ## 故障排查（现象 → 原因 → 处理）

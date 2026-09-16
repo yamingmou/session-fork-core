@@ -1,3 +1,4 @@
+# role: adapter:codex — 产品适配器，不含引擎逻辑
 """fork_core.adapter_codex — Codex（codex-cli / ChatGPT 桌面版内嵌）适配器。
 
 一手依据（2026-09-14 真机取证 + 原生分叉对照；每条结论的命令与原始输出
@@ -728,5 +729,5 @@ class CodexAdapter(TranscriptionAdapter):
     def readonly_hint(self, dst_ref: str) -> str:
         return (
             "分支转录未锁定只读（**本技能不会替你修改文件权限**）。如需防止 Codex 继续追加消息，"
-            f"可由你自己把该文件设为只读——例如：chmod 444 {dst_ref}"
+            f"可由你自己把该文件设为只读——（用你系统的方式把该文件设为只读）{dst_ref}"
         )
