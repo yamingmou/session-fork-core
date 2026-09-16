@@ -7,7 +7,7 @@ display_name_en: Session Fork
 description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。当你说"打分支""会话分叉""把这个任务复制成新分支""以某条回复为界新建对话""并行试几条路""把对话截断复制"，或提到 fork this session / branch this task 时使用。底层为 fork-core 通用引擎，跨产品可用。
 description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。注意：分叉复制的是会话上下文，工作区产物不会跟着回退——除非产物自身有版本记录（如 git），否则只有当前最终态。
 description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running. Note that a fork copies the session context only; workspace artifacts are not rolled back — unless they are version-controlled (e.g. git), only their final state exists.
-version: 2.4.11
+version: 2.4.12
 author: OfferKuai (Offer快) Team
 license: MIT
 tags: [workbuddy, claude-code, codex, hermes, openclaw, pi-coding-agent, session, fork, conversation, task, 会话分叉, 打分支, 任务分叉, 并行探索, 办公效率, 会话管理, 对话管理, 效率]
@@ -178,7 +178,7 @@ session-fork/
 | **pi** | **无需重启**：会话选择器（`/resume`）或 `/tree` 刷新即可 |
 | **OpenClaw** | `openclaw sessions --json` **立即可列出**；若 Gateway 正在运行，重启一次以加载 |
 
-**只对 WorkBuddy 成立、不要套到别人身上**的四件事：① 界面上的"**复制请求 ID**"按钮；② 「重启后左侧才出现」这个**具体表现**；③ `--fix`（**仅 workbuddy**，其他 adapter 会直接报错）；④ 项目日志写 `.workbuddy/memory/`。
+**只对 WorkBuddy 成立、不要套到别人身上**的四件事：① 界面上的"**复制请求 ID**"按钮；② 「重启后左侧才出现」这个**具体表现**；③ `--fix`（**仅 workbuddy**，其他 adapter 会直接报错；⚠️ 这是**本技能**的参数，与 OpenClaw 官方的 **`openclaw doctor --fix`** 不是一回事）；④ 项目日志写 `.workbuddy/memory/`。
 
 ### Step 1 — 确认源会话
 
@@ -360,8 +360,24 @@ python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw    
     - **OpenClaw**（两世代）：
       - `≤2026.6.x`（JSONL 后端）：真机跑出会话 → 引擎 fork → 官方 CLI `openclaw sessions` 列出 → **在分支上续跑成功**。
       - `≥2026.9.x`（SQLite 后端）：转录落在 `agents/<id>/agent/openclaw-agent.sqlite` 的 `transcript_events` 表（`(session_id, seq) → event_json`，**与 JSONL 的行序→条目完全同构**）。真机 fork 后官方 CLI 列出、**分支续跑成功**，且 OpenClaw 自己接管并维护该分支的投影进度（`indexed_seq` 随续跑推进）。
-        写入契约见「已知边界」——**7 张表缺一不可**，且须跑一次 `openclaw doctor --fix`。
+        写入契约见「已知边界」——**7 张表缺一不可**，且须跑一次 **`openclaw doctor --fix`**。
+        ⚠️ **这是 OpenClaw 官方的命令**（让官方校验并置 `entry_valid`），**与本技能自己的 `--fix` 参数完全无关**——两者同名不同物，**别混用**（前者在 OpenClaw 里跑，后者只在 WorkBuddy 里跑）。
   - **不在范围**：C 端云优先 SaaS（元宝 / 千问等）本地无转录。
+
+## 数据与权限边界（本技能会读写什么）
+
+> 这一节写给**要在受管环境里评估本技能的人**（安全审查 / 平台审核 / 团队管理员）。照实写，不夸大也不含糊。
+
+**读**：本产品自己的会话记录（WorkBuddy / Claude Code / Codex / Hermes / pi 的 transcript 文件，或 OpenClaw 的 SQLite 库），以及**只读**打开的产品会话索引。
+**写**（只有这三处，且**从不修改源会话**）：
+1. **新建**的分支会话（源会话逐字节不动）；
+2. **旁路**谱系索引（如 `~/.workbuddy/fork.lineage.json`）——不写产品官方 schema；
+3. 产品自己的会话索引（`sessions.json` / `sessions` 表等）**新增一行**指向该分支；**写前自动备份**（`.bak.<时间戳>`）。
+
+**明确不做**：不联网、不上传任何数据、不读凭据或密钥文件、**不请求提权（不调用 `sudo` / `root`）**、不改系统配置、不安装任何东西。
+**可先验证再执行**：`--dry-run` **零写入**（只读 + 全量校验，打印 `Verify : ✅ OK` 后退出）；`--verify` 是**只读**体检。
+**关于 `chmod`**：文档中出现的 `chmod 444 <文件>` 一律是**给用户的手动建议**（要不要锁定分支文件由你决定），**本技能不会去执行它**。
+**语言**：本技能面向中文用户编写；同时提供英文字段 `display_name_en` / `description_en`（英文说明见仓库 [README.en.md](https://github.com/yamingmou/session-fork-core/blob/main/README.en.md)）。
 
 ## 故障排查（现象 → 原因 → 处理）
 
@@ -381,9 +397,9 @@ python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw    
 ## 安装 / 升级（按产品，各一句话）
 
 - **WorkBuddy**：技能市场搜「会话分叉」，或 SkillHub 搜 `session-fork`；**升级 = 重新装一次**（装完是静态副本，不会自动更新）。
-<!--FKS:-->- **其他产品（Claude Code / Codex / Hermes / pi / OpenClaw）**：`pip install git+https://github.com/yamingmou/session-fork-core.git`；重装升级加 `--force-reinstall`。
+<!--FKS:-->- **其他产品（Claude Code / Codex / Hermes / pi / OpenClaw）**：`pip install "git+https://github.com/yamingmou/session-fork-core.git@vX.Y.Z"`——**把 `@vX.Y.Z` 换成你要的那个发布 tag**（从 [Releases](https://github.com/yamingmou/session-fork-core/releases) 选）。**钉住 tag 而不是装 `main`**：这样才能装到"你选定的那一版"，而不是"今天恰好是什么"；重装升级同样带 tag 并加 `--force-reinstall`。
 - 源码：https://github.com/yamingmou/session-fork-core · 作者 **OfferKuai（Offer快）团队** · License **MIT**（自由使用、修改与再分发，保留署名）。
 
 ## 变更历史
 
-见仓库根 **`CHANGELOG.md`**（每版按：价值 / 实现 / 修改 / 检查）。本文件只留「怎么执行」——把历史塞进每次执行都要读的文档里，是噪音也是成本。当前版本：**2.4.9**。
+见仓库根 **`CHANGELOG.md`**（每版按：价值 / 实现 / 修改 / 检查）。本文件只留「怎么执行」——把历史塞进每次执行都要读的文档里，是噪音也是成本。**当前版本不在此处手写**：唯一权威是仓库的 tag / Release 与包内 frontmatter 的 `version`（手写必然腐化——这一行就曾停在 2.4.9 两版没跟上）。

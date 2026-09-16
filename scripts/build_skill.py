@@ -67,6 +67,21 @@ def render(text: str, variant: str) -> str:
     return text
 
 
+def _english_description(text: str) -> str:
+    """ClawHub 版：把 frontmatter 的 `description` 换成英文。
+
+    为什么按渠道分（**不同平台是不同的读者**）：
+      · SkillHub / WorkBuddy 开放平台 → 受众是中文用户，`description` 用中文；
+      · **ClawHub → 受众是 OpenClaw / agent 生态，以英文为主** ⇒ 简介用英文。
+    中文简介不丢：它仍保留在 frontmatter 的 `description_zh` 里，正文也仍是中文。
+    """
+    m = re.search(r"^description_en:\s*(.+)$", text, re.M)
+    if not m:
+        return text
+    return re.sub(r"^description:.*$", "description: " + m.group(1).strip(),
+                  text, count=1, flags=re.M)
+
+
 def _pack_one(label: str, dirname: str, skill_text: str) -> int:
     """打一个渠道包：dist/<dirname>/session-fork/{SKILL.md,scripts/create_branch.py,fork_core/*.py}"""
     import shutil
@@ -106,7 +121,7 @@ def pack(wb_text: str, fork_text: str) -> int:
 
     if _pack_one("WorkBuddy / SkillHub", "wb", wb_text):
         return 1
-    if _pack_one("ClawHub / skills 目录", "clawhub", fork_text):
+    if _pack_one("ClawHub / skills 目录", "clawhub", _english_description(fork_text)):
         return 1
 
     py = sys.executable

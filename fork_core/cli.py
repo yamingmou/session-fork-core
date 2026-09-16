@@ -25,7 +25,7 @@ if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被�
 from . import available, create_fork, get_adapter, list_forks
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.11"
+VERSION = "2.4.12"
 
 
 def print_tree(metas) -> None:
@@ -253,7 +253,7 @@ def run_fix(fix_session_id: str) -> None:
     wb.write_branch(fix_path, lines[:cut])
     check = _load_lines(fix_path)
     print(f"Verify   : {len(check)} lines (was {total}, removed {total - len(check)})")
-    print(f"⚠️  分支文件未锁定只读。如需防止追加消息，请手动执行：chmod 444 {fix_path}")
+    print(f"ℹ️  分支文件未锁定只读（**本技能不会替你修改文件权限**）。如需要，可自行设为只读，例如：chmod 444 {fix_path}")
 
 
 def main(argv=None) -> None:

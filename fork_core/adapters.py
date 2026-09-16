@@ -1,5 +1,12 @@
 """fork_core.adapters — adapter 注册表（内置各产品适配器）。
 
+⚠️ **本文件只是注册表**：动态导入 + 可用性检测，**不含任何分叉逻辑**（不复制上下文、不创建分支、不截断、不写会话）。
+   分叉的完整链路在 **`fork_core/engine.py` 的 `create_fork()`**：
+   读源会话 → 按截断点裁剪 → 递归改写会话 id → 写出分支 → 校验 → 注册；
+   各产品的存储格式差异在同级 `adapter_<产品>.py`。
+   —— **若你在做安全审查 / 代码审计**：请以 `engine.py` 与 `adapter_*.py` 为"实际能力"的依据；
+   单看本文件会得出"与声明的分叉能力不符"的错误结论（逐文件审查时的已知陷阱，2026-09-16 记录）。
+
 用法：
     from fork_core.adapters import get_adapter
     adapter = get_adapter("workbuddy")

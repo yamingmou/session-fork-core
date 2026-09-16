@@ -15,7 +15,7 @@ import os
 import sqlite3
 
 from .models import SessionMeta, VerifyItem
-from .adapter_base import TranscriptionAdapter, dumps_safe
+from .adapter_base import TranscriptionAdapter, dumps_safe, notify
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
@@ -218,6 +218,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
         return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
+        notify(f"写入分支文件：{path}（新建，源会话不改动）")
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(dumps_safe(o) for o in lines) + "\n")
 

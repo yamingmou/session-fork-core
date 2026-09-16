@@ -15,6 +15,7 @@
 import json
 import os
 import shutil
+import sys
 import time
 from typing import Any, Optional
 
@@ -69,6 +70,20 @@ def dumps_safe(obj: Any, **kwargs: Any) -> str:
     except UnicodeEncodeError:
         text = json.dumps(obj, ensure_ascii=True, **kwargs)
     return text
+
+
+def notify(msg: str) -> None:
+    """面向用户的运行时提示（写盘 / 删除 / 回滚等**有副作用**的动作前调用）。
+
+    为什么需要它（2026-09-16 平台安全审查口径）：
+      **代码注释只算"给开发者看的"，不算 user-facing disclosure** ——
+      凡会改动用户数据（新建分支文件、覆写会话索引、删除注册行）的路径，
+      都需要一行**人类可读**的输出，让用户知道"发生了什么、动了哪个文件"。
+
+    输出走 stderr（不干扰 stdout 的结构化结果）；设 `FORK_QUIET=1` 可静音（供库调用与测试）。
+    """
+    if os.environ.get("FORK_QUIET") != "1":
+        print("→ " + msg, file=sys.stderr)
 
 
 class TranscriptionAdapter:
@@ -364,6 +379,6 @@ class TranscriptionAdapter:
     def readonly_hint(self, dst_ref: str) -> str:
         """防止产品继续往分支追加消息的提示（无文件可锁的介质返回空串）。"""
         return (
-            "分支文件未锁定只读。如需防止主进程追加消息，请手动执行："
-            f"chmod 444 {dst_ref}"
+            "分支文件未锁定只读（**本技能不会替你修改文件权限**）。如需防止主进程继续追加消息，"
+            f"可由你自己把该文件设为只读——例如：chmod 444 {dst_ref}"
         )

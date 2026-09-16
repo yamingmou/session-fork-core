@@ -16,7 +16,7 @@ import json
 import os
 
 from .models import SessionMeta, VerifyItem
-from .adapter_base import TranscriptionAdapter, dumps_safe
+from .adapter_base import TranscriptionAdapter, dumps_safe, notify
 
 HOME = os.path.expanduser("~")
 #: 根目录支持隔离：`CLAUDE_CONFIG_DIR` 是 Claude Code 官方认可的配置根覆盖变量
@@ -183,6 +183,7 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         return {"branches": []}
 
     def _write_index(self, data: dict) -> None:
+        notify(f"更新旁路分支索引：{BRANCH_INDEX}（不写产品官方 schema）")
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         with open(BRANCH_INDEX, "w", encoding="utf-8") as f:
             f.write(dumps_safe(data, indent=2))

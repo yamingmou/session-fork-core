@@ -727,6 +727,6 @@ class CodexAdapter(TranscriptionAdapter):
 
     def readonly_hint(self, dst_ref: str) -> str:
         return (
-            "分支转录未锁定只读。如需防止 Codex 继续往分支追加消息，请手动执行："
-            f"chmod 444 {dst_ref}"
+            "分支转录未锁定只读（**本技能不会替你修改文件权限**）。如需防止 Codex 继续追加消息，"
+            f"可由你自己把该文件设为只读——例如：chmod 444 {dst_ref}"
         )
