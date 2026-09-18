@@ -33,7 +33,7 @@ lines = [
     {"type": "user", "uuid": "u3", "parentUuid": "a2", "sessionId": src_id, "cwd": "/tmp",
      "message": {"role": "user", "content": [{"type": "text", "text": "打分支，命名『测试分支』"}]}},
 ]
-with open(path, "w") as f:
+with open(path, "w", encoding="utf-8") as f:
     for l in lines:
         f.write(json.dumps(l, ensure_ascii=False) + "\n")
 
@@ -79,7 +79,7 @@ r = create_fork(adapter, src_id, name="测试分支", dry_run=False)
 print(f"✓ create_fork: {r.new_id} cut={r.cut} name={r.name!r}")
 assert os.path.exists(r.dst_path), "dst not written"
 # 验证分支文件 sessionId 全部替换 + 全文件零旧 id 残留
-raw_all = open(r.dst_path).read()
+raw_all = open(r.dst_path, encoding="utf-8").read()
 assert src_id not in raw_all, "分支文件仍有旧 id 残留（text/tool_use.input/tool_result 引用未替换）"
 print("✓ 分支文件 sessionId 全替换 + 全文件零残留（text/tool_use/tool_result 引用）")
 

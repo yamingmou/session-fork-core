@@ -94,7 +94,7 @@ class WorkBuddyResolveTest(unittest.TestCase):
         db.close()
 
         # 只为 B 造一份转录文件（A 有 working 状态但无文件）
-        with open(os.path.join(M.PROJECTS_DIR, WS, SID_B + ".jsonl"), "w") as f:
+        with open(os.path.join(M.PROJECTS_DIR, WS, SID_B + ".jsonl"), "w", encoding="utf-8") as f:
             f.write('{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}\n')
 
         self._env_backup = {k: os.environ.get(k) for k in

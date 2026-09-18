@@ -68,7 +68,7 @@ lines = [
     {"type": "message", "role": "user", "sessionId": src_id,
      "content": [{"type": "input_text", "text": "打分支"}]},
 ]
-with open(os.path.join(proj_dir, src_id + ".jsonl"), "w") as f:
+with open(os.path.join(proj_dir, src_id + ".jsonl"), "w", encoding="utf-8") as f:
     for l in lines:
         f.write(json.dumps(l) + "\n")
 
@@ -324,7 +324,7 @@ _c.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,is
            ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
 _c.commit(); _c.close()
 _src = "SRC-1111-2222-3333-4444"
-with open(os.path.join(wb_mod2.PROJECTS_DIR, "Users-x-test", _src+".jsonl"), "w") as f:
+with open(os.path.join(wb_mod2.PROJECTS_DIR, "Users-x-test", _src+".jsonl"), "w", encoding="utf-8") as f:
     for l in [
         {"type":"message","role":"user","sessionId":_src,"content":[{"type":"input_text","text":"hi"}]},
         {"type":"message","role":"assistant","sessionId":_src,"content":[{"type":"output_text","text":"ok"}]},
@@ -347,7 +347,7 @@ _c2 = sqlite3.connect(wb_mod2.DB_PATH)
 _n = _c2.execute("SELECT count(*) FROM sessions").fetchone()[0]
 _c2.close()
 _files = os.listdir(os.path.join(wb_mod2.PROJECTS_DIR, "Users-x-test"))
-_lin = json.load(open(wb_mod2.LINEAGE_PATH)) if os.path.exists(wb_mod2.LINEAGE_PATH) else {"forks": []}
+_lin = json.load(open(wb_mod2.LINEAGE_PATH, encoding="utf-8")) if os.path.exists(wb_mod2.LINEAGE_PATH) else {"forks": []}
 assert _n == 1 and len(_files) == 1 and not _lin.get("forks"), "verify 失败应不留痕迹"
 shutil.rmtree(_atom_tmp)
 print("✓ 原子性: verify 失败不留半成品（db/文件/lineage 全干净）")
@@ -369,7 +369,7 @@ _rc.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,i
             ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
 _rc.commit(); _rc.close()
 _rsrc = "SRC-1111-2222-3333-4444"
-with open(os.path.join(_wb4.PROJECTS_DIR, "Users-x-test", _rsrc+".jsonl"), "w") as f:
+with open(os.path.join(_wb4.PROJECTS_DIR, "Users-x-test", _rsrc+".jsonl"), "w", encoding="utf-8") as f:
     for l in [
         {"type":"message","role":"user","sessionId":_rsrc,"content":[{"type":"input_text","text":"hi"}]},
         {"type":"message","role":"assistant","sessionId":_rsrc,"content":[{"type":"output_text","text":"ok"}]},
@@ -418,7 +418,7 @@ _lc.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,i
             ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
 _lc.commit(); _lc.close()
 _lsrc = "SRC-1111-2222-3333-4444"
-with open(os.path.join(_wb5.PROJECTS_DIR, "Users-x-test", _lsrc+".jsonl"), "w") as f:
+with open(os.path.join(_wb5.PROJECTS_DIR, "Users-x-test", _lsrc+".jsonl"), "w", encoding="utf-8") as f:
     for l in [
         {"type":"message","role":"user","sessionId":_lsrc,"content":[{"type":"input_text","text":"hi"}]},
         {"type":"message","role":"assistant","sessionId":_lsrc,"content":[{"type":"output_text","text":"ok"}]},
@@ -515,7 +515,7 @@ _dc.execute("INSERT INTO sessions (id,cwd,user_id,status,created_at,updated_at,i
             ("SRC-1111-2222-3333-4444","/tmp","u","working",1,1,0))
 _dc.commit(); _dc.close()
 _dsrc = "SRC-1111-2222-3333-4444"
-with open(os.path.join(_wb3.PROJECTS_DIR, "Users-x-test", _dsrc+".jsonl"), "w") as f:
+with open(os.path.join(_wb3.PROJECTS_DIR, "Users-x-test", _dsrc+".jsonl"), "w", encoding="utf-8") as f:
     for l in [
         {"type":"message","role":"user","sessionId":_dsrc,"content":[{"type":"input_text","text":"hi"}]},
         {"type":"message","role":"assistant","sessionId":_dsrc,"content":[{"type":"output_text","text":"ok"}]},
@@ -569,7 +569,7 @@ def _mk_session(sid, created_at):
 
 
 def _write_session(sid, rows):
-    with open(os.path.join(_wb6.PROJECTS_DIR, "Users-x-test", sid + ".jsonl"), "w") as f:
+    with open(os.path.join(_wb6.PROJECTS_DIR, "Users-x-test", sid + ".jsonl"), "w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
 
