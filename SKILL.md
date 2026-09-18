@@ -104,7 +104,7 @@ session-fork/
 > **用户只是在说文字**（哪怕他说的是"那条**回复**"）→ 用 **`--match "<那段文字>"`**。
 > ⚠️ `--request-id` **只能装 ID**，不能装文字。
 
-> **⛔ 动手前先做这一件事**：下面的命令**统一写成 WorkBuddy 形式**（`python3 "${SK}scripts/create_branch.py" …`）。**若你不在 WorkBuddy 里**，先读「**Step 0 · 先判定你在哪个产品里**」，把前缀换成 `fork`（pip 渠道）或你所在产品的技能目录路径，**并补上 `--adapter <你的产品>`**——其余参数完全相同。
+> **⛔ 动手前先做这一件事**：下面的命令**统一写成 WorkBuddy 形式**（`python3 "${SK}/scripts/create_branch.py" …`）。**若你不在 WorkBuddy 里**，先读「**Step 0 · 先判定你在哪个产品里**」，把前缀换成 `fork`（pip 渠道）或你所在产品的技能目录路径，**并补上 `--adapter <你的产品>`**——其余参数完全相同。
 >
 > **入口路径先用命令取，不要照抄**（技能目录可能带市场后缀，如 `session-fork__skillhub/`；照抄会踩空，现场乱找入口＝跑到别的目录的副本上）：
 > ```bash
@@ -117,11 +117,11 @@ session-fork/
 
 | 用户给了什么 | AI 用什么命令 |
 |---|---|
-| 什么都没贴（当前对话） | `python3 "${SK}scripts/create_branch.py" --session current`（默认截断点） |
-| @引用了一段内容（long-text quote）说打分支 | 从引用 JSON 提取 id（格式 `<sessionId>-<requestId>`，如 `"ec48e1ae-…-e683a22a…"`）→ `python3 "${SK}scripts/create_branch.py" --session <sessionId> --request-id <requestId>` |
-| 贴完整 JSON（conversationId + conversationRequestId） | `python3 "${SK}scripts/create_branch.py" --session <conversationId> --request-id <conversationRequestId>`（conversationId = 会话 ID，直接定位） |
-| 只贴了 conversationRequestId / traceId | `python3 "${SK}scripts/create_branch.py" --request-id <id>`（自动反查该 ID 所属会话，跨工作区） |
-| 说了文本/行号 | `python3 "${SK}scripts/create_branch.py" --session current --match "XXX"` 或 `--line N` |
+| 什么都没贴（当前对话） | `python3 "${SK}/scripts/create_branch.py" --session current`（默认截断点） |
+| @引用了一段内容（long-text quote）说打分支 | 从引用 JSON 提取 id（格式 `<sessionId>-<requestId>`，如 `"ec48e1ae-…-e683a22a…"`）→ `python3 "${SK}/scripts/create_branch.py" --session <sessionId> --request-id <requestId>` |
+| 贴完整 JSON（conversationId + conversationRequestId） | `python3 "${SK}/scripts/create_branch.py" --session <conversationId> --request-id <conversationRequestId>`（conversationId = 会话 ID，直接定位） |
+| 只贴了 conversationRequestId / traceId | `python3 "${SK}/scripts/create_branch.py" --request-id <id>`（自动反查该 ID 所属会话，跨工作区） |
+| 说了文本/行号 | `python3 "${SK}/scripts/create_branch.py" --session current --match "XXX"` 或 `--line N` |
 | **只是在聊天里"提到"某段文字**（没有复制任何 ID） | 同上：`--match "<那段文字>"` ⚠️ **不要**把它当 `--session`，**更不要编造** `--request-id` |
 
 > **⚠️ 铁律**：用户给了**任何形式的引用**（@long-text 引用 / 复制的请求 ID JSON / 纯 requestId / 指向别处的会话内容）→ **源会话 = 引用所指的那个会话，严禁默认 `--session current` 打当前对话**。识别引用 ID：JSON 里找 `conversationId`，或 @引用内容里找 `"id": "<sessionId>-<requestId>"` 双段拼接格式。拿不准时先 `--dry-run` 展示将要打源会话名 + 断点，问用户确认再正式执行——**绝不反复试错创建分支**。
@@ -135,10 +135,10 @@ session-fork/
 
 | 用户这么说 | 你输出这一行 |
 |---|---|
-| 打分支，命名『论文讨论』 | `python3 "${SK}scripts/create_branch.py" --session current --name "论文讨论"` |
-| 从『teal』那条回复开始打分支 | `python3 "${SK}scripts/create_branch.py" --session current --match "teal"` |
-| 打分支，从第 6 行截断 | `python3 "${SK}scripts/create_branch.py" --session current --line 6` |
-| （贴了 conversationId + conversationRequestId） | `python3 "${SK}scripts/create_branch.py" --session "<conversationId>" --request-id "<conversationRequestId>"` |
+| 打分支，命名『论文讨论』 | `python3 "${SK}/scripts/create_branch.py" --session current --name "论文讨论"` |
+| 从『teal』那条回复开始打分支 | `python3 "${SK}/scripts/create_branch.py" --session current --match "teal"` |
+| 打分支，从第 6 行截断 | `python3 "${SK}/scripts/create_branch.py" --session current --line 6` |
+| （贴了 conversationId + conversationRequestId） | `python3 "${SK}/scripts/create_branch.py" --session "<conversationId>" --request-id "<conversationRequestId>"` |
 
 ### 排除（不触发执行，只回答问题）
 
@@ -158,7 +158,7 @@ session-fork/
 
 | 你在哪 | 命令入口 |
 |---|---|
-| **WorkBuddy**（技能市场安装） | `python3 "${SK}scripts/create_branch.py" <参数>` |
+| **WorkBuddy**（技能市场安装） | `python3 "${SK}/scripts/create_branch.py" <参数>` |
 | **其他产品的技能目录**（如从 ClawHub 装进该产品的 skills 目录） | `python3 <该技能目录>/scripts/create_branch.py <参数>` |
 | **pip 安装的命令行**（Claude Code / Codex / Hermes / pi / OpenClaw 在终端里的路径） | `fork <参数>` |
 
@@ -273,7 +273,7 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
 
 **执行方式：只用这一条命令**（不需要 pip、不依赖 cwd，整行复制即可用）：
 
-- **WorkBuddy**：`python3 "${SK}scripts/create_branch.py" <参数>`
+- **WorkBuddy**：`python3 "${SK}/scripts/create_branch.py" <参数>`
 - **其他产品的技能目录**：`python3 <该技能目录>/scripts/create_branch.py <参数>`
 - **pip 命令行**：`fork <参数>`
 
@@ -282,24 +282,24 @@ dry-run 也走完整校验（会真写 .tmp + 自检，只是不落位/不登记
 
 ```bash
 # 场景 1：当前对话打分支（用户没贴任何 ID）
-python3 "${SK}scripts/create_branch.py" --session current --name "<分支名>"                 # 默认截断到上一轮输出结束
-python3 "${SK}scripts/create_branch.py" --session current --match "<拆分点特征文本>"          # 从当前对话某条回复打
+python3 "${SK}/scripts/create_branch.py" --session current --name "<分支名>"                 # 默认截断到上一轮输出结束
+python3 "${SK}/scripts/create_branch.py" --session current --match "<拆分点特征文本>"          # 从当前对话某条回复打
 
 # 场景 2：从贴的 conversation ID 打（用户贴了"复制请求 ID"，可能来自任何对话/工作区）
-python3 "${SK}scripts/create_branch.py" --session "<conversationId>" --request-id "<conversationRequestId>" --name "<分支名>"
+python3 "${SK}/scripts/create_branch.py" --session "<conversationId>" --request-id "<conversationRequestId>" --name "<分支名>"
 #   ↑ conversationId 即 UI 复制 JSON 里的 conversationId（= 源会话 ID），直接定位
 # 只拿到 requestId/traceId 时：自动反查所属会话（无需 --session）
-python3 "${SK}scripts/create_branch.py" --request-id "<conversationRequestId>" --name "<分支名>"
+python3 "${SK}/scripts/create_branch.py" --request-id "<conversationRequestId>" --name "<分支名>"
 
 # 运维类
-python3 "${SK}scripts/create_branch.py" --list                                        # 查询分支
-python3 "${SK}scripts/create_branch.py" --fix <分支会话ID>                              # 修复被追加消息的分支（仅 workbuddy）
-python3 "${SK}scripts/create_branch.py" --verify                                      # 真库体检（发布前必跑），别名 --doctor
-python3 "${SK}scripts/create_branch.py" --session current --adapter pi                # pi（L2 真机实测）
-python3 "${SK}scripts/create_branch.py" --session current --adapter claude-code       # Claude Code（L3 产品终验）
-python3 "${SK}scripts/create_branch.py" --session current --adapter codex             # Codex（L3 产品终验）
-python3 "${SK}scripts/create_branch.py" --session current --adapter hermes            # Hermes（L3 产品终验）
-python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw          # OpenClaw（≤2026.6.x / ≥2026.9.x 自动识别后端）
+python3 "${SK}/scripts/create_branch.py" --list                                        # 查询分支
+python3 "${SK}/scripts/create_branch.py" --fix <分支会话ID>                              # 修复被追加消息的分支（仅 workbuddy）
+python3 "${SK}/scripts/create_branch.py" --verify                                      # 真库体检（发布前必跑），别名 --doctor
+python3 "${SK}/scripts/create_branch.py" --session current --adapter pi                # pi（L2 真机实测）
+python3 "${SK}/scripts/create_branch.py" --session current --adapter claude-code       # Claude Code（L3 产品终验）
+python3 "${SK}/scripts/create_branch.py" --session current --adapter codex             # Codex（L3 产品终验）
+python3 "${SK}/scripts/create_branch.py" --session current --adapter hermes            # Hermes（L3 产品终验）
+python3 "${SK}/scripts/create_branch.py" --session current --adapter openclaw          # OpenClaw（≤2026.6.x / ≥2026.9.x 自动识别后端）
 # OpenClaw 后端也可强制：FORK_OPENCLAW_BACKEND=jsonl|sqlite（默认 auto）
 ```
 
@@ -309,7 +309,7 @@ python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw    
   `Source   : <会话id>  「<会话名>」`
   **先确认这个源会话就是你（和用户）所在的那个对话**。父 id 对不上时肉眼看不出来，**名字**能一眼看出来。不一致 → **立即停手**，把"你在的对话 / 实际被当成源会话的对话"两个名字摆给用户，问清要哪条；**不要继续，更不要交付一个"来历正确但对话不对"的分支**（2026-09-15 事故正是如此：用户在 A 对话里打分支，产物是 B 对话的分支）；
 - **先 `--dry-run` 确认截断点，再正式执行**（推荐，防打错位置）；
-- **`python3 "${SK}scripts/create_branch.py" --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
+- **`python3 "${SK}/scripts/create_branch.py" --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
 - 脚本自动完成备份 → 截取 → 会话 id 替换 → 注册 → 校验，无需手工介入。
 
 ### Step 4 — 验证与汇报

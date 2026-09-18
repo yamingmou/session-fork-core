@@ -38,7 +38,18 @@ SRC = REPO / "skill" / "SKILL.src.md"
 OUT_WB = REPO / "SKILL.md"
 OUT_FORK = REPO / "dist" / "SKILL.fork.md"
 
-LONG_ENTRY = 'python3 "${SK}scripts/create_branch.py"'
+# 非 UTF-8 终端（Windows 中文=cp936 / 英文=cp1252）下，下面的 print 含 ✓ 与中文，
+# 会直接抛 UnicodeEncodeError 而**把构建打断**（CI 实测）。与 fork_core.harden_output
+# 同一逻辑，此处内联以让构建脚本保持零依赖。
+try:
+    if not (sys.stdout.encoding or "").lower().startswith("utf"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001 —— 非 TextIOWrapper（如 BytesIO）等：无害跳过
+    pass
+
+# ⚠️ 这是 SKILL.md 里**所有命令示例**的入口形态来源（占位符 {{FORK}} 的替换值）。
+# 取技能目录的片段已把 SK 的尾斜杠去掉（`SK="${SK%/}"`），故此处必须写 ${SK}/scripts/…
+LONG_ENTRY = 'python3 "${SK}/scripts/create_branch.py"'
 FORK_ENTRY = "fork"
 
 ADAPTER_WB = ""
