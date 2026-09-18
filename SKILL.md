@@ -11,7 +11,7 @@ version: 2.4.13
 author: OfferKuai (Offer快) Team
 license: MIT
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-metadata: {"clawdbot":{"emoji":"🔀","requires":{"bins":["python3"]}}}
+metadata: {"openclaw":{"emoji":"🔀","requires":{"anyBins":["python3","python","py"]}}}
 tags: [workbuddy, claude-code, codex, hermes, openclaw, pi-coding-agent, session, fork, conversation, task, 会话分叉, 打分支, 任务分叉, 并行探索, 办公效率, 会话管理, 对话管理, 效率]
 agent_created: true
 ---
@@ -109,8 +109,9 @@ session-fork/
 > **入口路径先用命令取，不要照抄**（技能目录可能带市场后缀，如 `session-fork__skillhub/`；照抄会踩空，现场乱找入口＝跑到别的目录的副本上）：
 > ```bash
 > SK=$(ls -d ~/.workbuddy/skills/session-fork*/ 2>/dev/null | head -1)
-> [ -n "$SK" ] && [ -f "${SK}scripts/create_branch.py" ] || echo "⛔ 找不到技能入口，先确认技能装在哪"
-> echo "入口: ${SK}scripts/create_branch.py"
+> SK="${SK%/}"        # 去掉尾斜杠：下面统一用 ${SK}/scripts/…，两平台拼法都成立
+> [ -n "$SK" ] && [ -f "${SK}/scripts/create_branch.py" ] || echo "⛔ 找不到技能入口，先确认技能装在哪"
+> echo "入口: ${SK}/scripts/create_branch.py"
 > ```
 > **⛔ 动手前先做这一件事**：下面的命令**统一写成 `fork …`**（你已用 pip 装了本工具）。**若你是把本技能装进了某个产品的 skills 目录**（ClawHub 等），把 `fork` 换成 `python3 <该技能目录>/scripts/create_branch.py`——**参数完全相同**。<!--:FKS-->
 
@@ -164,11 +165,34 @@ session-fork/
 **判定顺序（30 秒内定下来，不要猜、不要两套都试）**：
 
 1. `fork --version` 能跑通 → 用 **`fork`**；
-2. 否则 `ls -d ~/.workbuddy/skills/session-fork*/ 2>/dev/null | head -1` **有命中、且该目录下 `scripts/create_branch.py` 存在** → 用 **WorkBuddy 形式**（真入口 = `${SK}scripts/create_branch.py`，见上文取法；⚠️ 目录名可能带市场后缀 `__skillhub`，**不要**写死成 `session-fork/`）；
+2. 否则 `ls -d ~/.workbuddy/skills/session-fork*/ 2>/dev/null | head -1` **有命中、且该目录下 `scripts/create_branch.py` 存在** → 用 **WorkBuddy 形式**（真入口 = `${SK}/scripts/create_branch.py`，见上文取法；⚠️ 目录名可能带市场后缀 `__skillhub`，**不要**写死成 `session-fork/`）；
 3. 否则看你所在产品的 skills 目录里有没有本技能；
 4. 都不确定 → **问用户一句**："你是在 WorkBuddy 里用，还是本机命令行（pip 装的）？"
 
 **adapter 对应**：WorkBuddy 是默认（不写 `--adapter`）；其余五种**必须写** —— `--adapter claude-code` / `codex` / `hermes` / `pi` / `openclaw`。
+
+### Step 0.5 — 平台差异（决定「命令怎么写」）
+
+**先判平台**：`uname` 能跑 → **macOS / Linux / WSL**（POSIX，本文其余命令直接可用，无需替换）；报"不是内部或外部命令" → 你在**原生 Windows**，按下表换写法。
+
+| 用途 | POSIX（macOS / Linux / WSL） | 原生 Windows（PowerShell / CMD） |
+|---|---|---|
+| 跑入口 | `python3 "<技能目录>/scripts/create_branch.py"` | `py -3 "<技能目录>\scripts\create_branch.py"` |
+| 取技能目录 | `SK=$(ls -d ~/.workbuddy/skills/session-fork*/ \| head -1)` | `$SK=(Get-ChildItem "$env:USERPROFILE\.workbuddy\skills" -Dir -Filter "session-fork*")[0].FullName` |
+| 家目录 | `~` / `$HOME` | `$env:USERPROFILE`（PS）· `%USERPROFILE%`（CMD） |
+| 设环境变量 | `export CODEX_HOME=/x` | PS `$env:CODEX_HOME="C:\x"` · CMD `set CODEX_HOME=C:\x` |
+| 查文件内容 | `grep -n "词" f.jsonl` | PS `Select-String -Path f.jsonl -Pattern "词"` · CMD `findstr /n "词" f.jsonl` |
+| 设文件只读 | `chmod 444 f` | `attrib +R f` |
+
+**Windows 上的四个坑**（均有官方依据，别凭印象）：
+
+1. **`python3` 不保证存在** —— Python 官方把它定位为"捕获 POSIX 习惯误用"的兼容命令，**不推荐使用** ⇒ 优先 **`py -3`**，其次 `python`。
+2. **`python` 可能被 Microsoft Store 应用别名拦截**（敲了没反应、或弹出商店）⇒ 同样优先 `py -3`。
+3. **PowerShell 执行策略**可能拦住全局 npm 装的 CLI（报 `npm.ps1 cannot be loaded because running scripts is disabled`）。修法是**用户自行**执行 `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` —— **本技能不会替你改系统设置**。
+4. **WSL 与原生 Windows 的会话库互不共享**（`/home/u/.codex` ↔ `C:\Users\u\.codex`）—— 你在哪边跑，就用哪边的库。
+
+> **目录位置两平台同构**（`~/.claude` ↔ `%USERPROFILE%\.claude`；`~/.codex` ↔ `%USERPROFILE%\.codex`）⇒ **`--adapter` 与其余参数完全一致**，平台差异只在"命令怎么写"。
+> 中文 Windows 终端若把输出里的装饰符号显示为 `?`，那是本技能的编码兜底在起作用（正文与全部中文不受影响）；想看原样可设 `PYTHONIOENCODING=utf-8`。
 
 ### 分支怎么出现（**按产品**，与工具输出一致；不要凭记忆）
 
@@ -176,9 +200,9 @@ session-fork/
 
 | 产品 | 怎么看到分支 |
 |---|---|
-| **WorkBuddy** | 左侧会话列表**非实时刷新** → 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`） |
+| **WorkBuddy** | 左侧会话列表**非实时刷新** → 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`；Windows：托盘图标右键 → 退出后重开） |
 | **Claude Code** | 在终端重跑 `claude`，用 **`/resume`** 选择该会话（**无需重启其他程序**） |
-| **Codex** | ① 可直接续跑：`codex exec resume <新 id> "…"`；② **桌面版会话列表也要 ⌘Q 重开**才可见；③ 想被 `codex fork --last` 选中，用 `codex exec resume` 跑一轮 |
+| **Codex** | ① 可直接续跑：`codex exec resume <新 id> "…"`；② **桌面版会话列表也要重启才可见**（macOS ⌘Q / Windows 托盘退出）；③ 想被 `codex fork --last` 选中，用 `codex exec resume` 跑一轮 |
 | **Hermes** | **无需重启、无需修复命令**：`hermes sessions list` 即可看到；`hermes chat --resume <分支 id>` 续跑 |
 | **pi** | **无需重启**：会话选择器（`/resume`）或 `/tree` 刷新即可 |
 | **OpenClaw** | `openclaw sessions --json` **立即可列出**；若 Gateway 正在运行，重启一次以加载 |
@@ -349,9 +373,30 @@ python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw    
 5. **WorkBuddy 会追加消息到分支文件**（**这条只对 WorkBuddy 成立，不要套到其他产品**）：脚本创建分支后，WorkBuddy 主进程可能仍向该 jsonl 追加新消息。v1.4.0 起不再自动锁只读（执行后提示用户自行设为只读），已有分支可用 `--fix` 修复（**仅 workbuddy**）。
 6. **快照分支特性**：复制发生在读取时刻，原会话之后的新消息不会进分支——这是正常行为，不是丢数据。
 7. **附属目录 tool-results/**：是运行时输出缓存，jsonl 已内嵌完整 function_call_result，分支**不需要**复制附属目录（或建空目录即可）。
-8. **先备份再动手**：脚本已内置备份，不要跳过。备份默认**落在你所用产品自己的目录里**——WorkBuddy `~/.workbuddy/backups`；Claude Code `~/.claude/fork-backups`；Codex `~/.codex/fork-backups`；Hermes `$HERMES_HOME/fork-backups`；pi `~/.pi/agent/fork-backups`；OpenClaw `<agent 目录>/fork-backups`。想统一改到别处：设环境变量 **`FORK_BACKUP_DIR`**（对所有产品生效）。
+8. **先备份再动手**：脚本已内置备份，不要跳过。备份默认**落在你所用产品自己的目录里**——WorkBuddy `~/.workbuddy/backups`；Claude Code `~/.claude/fork-backups`；Codex `~/.codex/fork-backups`；Hermes `$HERMES_HOME/fork-backups`；pi `~/.pi/agent/fork-backups`；OpenClaw `<agent 目录>/fork-backups`。想统一改到别处：设环境变量 **`FORK_BACKUP_DIR`**（对所有产品生效）。（Windows 上这些路径里的 `~` 一律指 `%USERPROFILE%`。）
 
 ## 边界
+
+### 血缘只认谱系文件，不认转录（重要）
+
+**fork 产物的正文里读不出"它从谁来"**——因为本引擎做的是**递归 id 替换**：被复制正文里出现的**源会话 id**，会被一并改写成**分支自己的 id**（覆盖全部可读字段，仅 `rawContent` / `rawResponse` 等原始内容黑名单不碰）。
+
+⇒ **拿转录去证"我来自谁"必然得出错误结论**（父 id 在产物里已经被改写掉了）。
+**唯一可信的出处是谱系索引**：本产品目录下的谱系文件（WorkBuddy 为 `~/.workbuddy/fork.lineage.json`）里的 `parent_id` 与 `at_seq` —— `--list --tree` 读的就是它。
+
+> 实测（一次真实分叉）：分支自己的文件里，标记指向**它自己** 52 次；而父会话文件里标记指向父的 42 次、指向该分支的 **0** 次。
+> 两边都只剩"自己"⇒ 光看转录会得出"它来自自己"这种荒谬结论。
+
+### 任务分支 vs 身份分化：**同一个工具，两种语义**
+
+| | **任务分支** | **身份分化** |
+|---|---|---|
+| 用户意图 | 同一段经历换个窗口继续走 | **造出一个新个体** |
+| 产物是什么 | 一份可继续的工作现场 | **一个成员**（有自己的身份与记忆） |
+| 你要多做一件事 | 交代分支怎么打开、原线不受影响 | **提醒用户：新个体需要"自报身份" + 它自己的记忆文件** |
+
+⚠️ **身份分化时最容易出错的一件事**：让新个体**与来源共用同一份记忆 / 档案文件** ⇒ 两边互相覆盖，**比丢记忆更糟**。
+来源的记忆对新个体是"**继承来的上下文**"，不是"**它的履历**"。
 
 - **产物边界（最重要的一条，详见上文「分叉边界」）**：分叉只复制**会话上下文**，不回退**工作区文件**与**已发生的外部副作用**。会话可以分叉到任意节点，产物则只有在**自身有版本记录**（git 提交 / 云文档版本历史 / 快照备份）时才能对齐回切点；**没有记录的就只有最终态**。因此"回到过去"这件事，上限由产物的版本记录决定，不由分叉决定。
 - 本技能做的是**存储级复制**（JSONL 后端 = 新 jsonl 文件；SQLite 后端 = 库内新 session_id 的一整套行 + 会话索引记录），不是"链接/指向"——链接会让原会话后续写入污染分支，且无法表达"截断到某行为止"。
@@ -390,7 +435,7 @@ python3 "${SK}scripts/create_branch.py" --session current --adapter openclaw    
 |---|---|---|---|
 | 全部 | `VERIFY FAILED: old session id still present in non-raw fields` | 替换引擎漏了某可读字段（真残留，会拦）| 属创建阻断——v2.4.3 起验证前置：失败自动清理已写文件与注册，**不留脏分支**；排查残留字段是否在新字段类型上 |
 | 全部 | `VERIFY FAILED` 但分支已出现在产品里 | **旧版缺陷**（v2.4.3 及更早：verify 在注册后才跑，失败也留脏分支）| 删掉该脏分支；升级到 v2.4.3+，新失败不再留痕 |
-| **仅 WorkBuddy** | 分支建好但**左侧没出现** | WorkBuddy 会话列表**非实时刷新**（正常行为）| 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`）后即可看到 |
+| **仅 WorkBuddy** | 分支建好但**左侧没出现** | WorkBuddy 会话列表**非实时刷新**（正常行为）| 重启客户端（macOS：⌘Q 重开 或 `open -a WorkBuddy`；Windows：托盘图标右键 → 退出后重开）后即可看到 |
 | 非 WorkBuddy | 分支建好但**看不到** | 各产品不同，且**有反直觉项**（如 Codex 桌面版也要 ⌘Q 重开）| **照脚本输出的 `ACTION` 行做**；逐产品要点见 **Step 0「分支怎么出现」表**——不要照搬 WorkBuddy 的说法 |
 | **仅 WorkBuddy** | 分支打开后**末尾多了一段不是我的内容** | 主进程在创建后继续向分支文件追加了消息（脚本不锁只读）| 用 `--fix <分支会话ID>` 重截断到谱系记录的 `at_seq`（**仅 workbuddy 支持**） |
 | 全部 | 原会话之后的新消息没进分支 | 快照特性（复制发生在读取时刻）——正常行为，不是丢数据 | 无需处理 |

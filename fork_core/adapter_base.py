@@ -73,6 +73,25 @@ def dumps_safe(obj: Any, **kwargs: Any) -> str:
     return text
 
 
+def harden_output() -> None:
+    """stdout 的编码兜底：非 UTF-8 终端下别让装饰字符打断输出。
+
+    为什么需要（2026-09-18 实测）：中文 Windows 默认代码页 cp936(GBK)，
+    而 **stdout 的 errors 默认是 `strict`** —— 输出含装饰性字符（🩺 ✅ ❌ 📂 ⌘，
+    GBK 都编不了）时 print 直接抛 UnicodeEncodeError。实测 `--verify` 退出码 1，
+    且报错行自身也含 ❌ 从而二次崩（连错误信息都打不出来）。
+    改成 "replace" 后装饰字符退化为 "?"，正文与中文信息完整保留。
+
+    **只动 stdout**：stderr 的默认 errors 是 `backslashreplace`（Python 内置兜底，
+    本来就不抛；实测 GBK 下输出 `\\u26a0\\ufe0f` 字面且不报错），改它只会
+    平白改变既有输出形态。
+    """
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass  # 非 TextIOWrapper（如被替换为 BytesIO）或已关闭：无害跳过
+
+
 def notify(msg: str, *, quietable: bool = True) -> None:
     """面向用户的运行时提示（写盘 / 删除 / 回滚等**有副作用**的动作前调用）。
 
@@ -81,6 +100,9 @@ def notify(msg: str, *, quietable: bool = True) -> None:
     故 `FORK_QUIET=1` 只静音**非副作用**类提示（供库调用与测试）。
 
     提示串**中英并置**：安全相关提示不应只给一种语言（同一原因见语言政策项）。
+
+    ⚠️ 此处**不需要**编码兜底：stderr 的 errors 默认是 `backslashreplace`，
+    非 UTF-8 终端下不抛异常（只把不可编码字符写成 `\\uXXXX` 转义）；stdout 才需要，见 `harden_output`。
     """
     if not quietable or os.environ.get("FORK_QUIET") != "1":
         print("→ " + msg, file=sys.stderr)
@@ -280,7 +302,8 @@ class TranscriptionAdapter:
         """
         return (
             "会话列表非实时刷新，需重启对应产品才能在左侧看到\n"
-            "            macOS: ⌘Q 退出重开，或终端执行 open -a WorkBuddy"
+            "            macOS: ⌘Q 退出重开，或终端执行 open -a WorkBuddy\n"
+            "            Windows: 托盘图标右键退出后重开"
         )
 
     def produce_hint(self) -> str:

@@ -706,7 +706,7 @@ class CodexAdapter(TranscriptionAdapter):
         return (
             "Codex 侧已写 2 层索引 + 1 个转录：\n"
             "            ① `codex exec resume <新 id> \"…\"` 可直接续跑（非交互，按 UUID 精确定位）\n"
-            "            ② 桌面版会话列表非实时刷新，⌘Q 重开可见\n"
+            "            ② 桌面版会话列表非实时刷新，重启可见（macOS ⌘Q / Windows 托盘退出）\n"
             "            ③ 想让它被 `codex fork --last` 选中：用 `codex exec resume` 跑一轮即可"
         )
 

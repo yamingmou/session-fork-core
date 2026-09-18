@@ -1,0 +1,67 @@
+# 三平台 CI：Linux / macOS / Windows
+#
+# 为什么需要它（2026-09-18 立）：本技能此前 13 个版本**全部只在 macOS 本机手测**，
+# 于是"只在目标平台才暴露"的缺陷在结构上不可能被发现 —— 中文 Windows 的输出编码
+# 就是实例（cp936 编不了 emoji，stdout 的 strict 直接把命令打断，退出码 1）。
+# 本工作流把这类问题变成可回归的：三平台跑同一套测试 + 换行符一致性 + 产物一致性。
+#
+# 注：Windows runner 走 Git Bash（shell: bash），但 Python 仍是**原生 Windows** Python，
+# 因此其 stdout 编码/文件系统语义就是真实 Windows 行为 —— 能测出真问题。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  python: "3.13" }
+          - { os: macos-latest,   python: "3.13" }
+          - { os: windows-latest, python: "3.13" }
+          - { os: ubuntu-latest,  python: "3.9" } # 兜住 requires-python 下限
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 编译（含「被当脚本直接执行」的入口）
+        run: python -m py_compile fork_core/*.py scripts/*.py
+
+      - name: 全量测试
+        run: |
+          fail=0
+          for f in tests/test_*.py; do
+            echo "───────── $f"
+            python "$f" || fail=1
+          done
+          exit $fail
+
+      - name: 换行符一致性（文本一律 LF；CRLF 会让跨平台产物不一致）
+        run: |
+          bad=$(git ls-files --eol | awk '$1 ~ /crlf/ || $2 ~ /crlf/ {print}')
+          if [ -n "$bad" ]; then
+            echo "::error::以下文件含 CRLF，违反 .gitattributes 的 eol=lf 约定："
+            echo "$bad"
+            exit 1
+          fi
+          echo "✅ 全部 LF"
+
+      - name: 文档产物与源一致（SKILL.md 是构建产物，不能手改）
+        run: python scripts/build_skill.py --check

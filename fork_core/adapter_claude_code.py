@@ -184,6 +184,13 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         return {"branches": []}
 
     def _write_index(self, data: dict) -> None:
+        # 路径断言（安全审查 Taint 项的修法）：CLAUDE_DIR 可来自环境变量 CLAUDE_CONFIG_DIR
+        # ⇒ 写前确认目标**确实落在预期目录内**，不符即拒写（fail-closed）——
+        #    防"环境变量被指向别处时，我们把文件写到不该写的地方"。
+        _target = os.path.realpath(BRANCH_INDEX)
+        _expect = os.path.join(os.path.realpath(CLAUDE_DIR), "fork.branches.json")
+        if _target != _expect:
+            raise RuntimeError(f"分支索引路径异常，已拒写：{_target}（预期 {_expect}）")
         notify(f"更新旁路分支索引 / updating sidecar branch index: {BRANCH_INDEX}", quietable=False)
         os.makedirs(CLAUDE_DIR, exist_ok=True)
         with open(BRANCH_INDEX, "w", encoding="utf-8") as f:

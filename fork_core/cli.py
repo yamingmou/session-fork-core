@@ -24,6 +24,7 @@ if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被�
     __package__ = "fork_core"
 
 from . import available, create_fork, get_adapter, list_forks
+from .adapter_base import harden_output
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
 VERSION = "2.4.13"
@@ -263,6 +264,7 @@ def main(argv=None) -> None:
     exit code 语义：1=ForkError 通用 / 2=自检失败（零副作用，可重试）/
     3=登记失败（文件已回滚，可安全重试）/ 4=回滚失败（需人工清理）。
     """
+    harden_output()  # 非 UTF-8 终端（中文 Windows cp936）下别让装饰字符打断输出
     try:
         _main(argv)
     except ForkRollbackError as e:

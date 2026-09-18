@@ -91,7 +91,7 @@ def _pack_one(label: str, dirname: str, skill_text: str) -> int:
         shutil.rmtree(out)
     (out / "scripts").mkdir(parents=True)
     (out / "fork_core").mkdir(parents=True)
-    (out / "SKILL.md").write_text(skill_text, encoding="utf-8")
+    (out / "SKILL.md").write_text(skill_text, encoding="utf-8", newline="\n")
     shutil.copy2(REPO / "scripts" / "create_branch.py", out / "scripts")
     for p in sorted((REPO / "fork_core").glob("*.py")):
         shutil.copy2(p, out / "fork_core")
@@ -189,9 +189,9 @@ def main() -> int:
         print("✓ 两份产物都与源一致")
         return 0
 
-    OUT_WB.write_text(wb, encoding="utf-8")
+    OUT_WB.write_text(wb, encoding="utf-8", newline="\n")
     OUT_FORK.parent.mkdir(parents=True, exist_ok=True)
-    OUT_FORK.write_text(fork, encoding="utf-8")
+    OUT_FORK.write_text(fork, encoding="utf-8", newline="\n")
 
     def stat(label: str, s: str) -> None:
         wb_marks = len(re.findall(r"WorkBuddy|workbuddy", s))

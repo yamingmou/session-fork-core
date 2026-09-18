@@ -1,0 +1,18 @@
+# 换行符统一为 LF（三平台一致）
+#
+# 为什么（2026-09-18）：Windows 的 Git 默认 core.autocrlf=true，会把文本文件
+# checkout 成 CRLF —— 于是同一份源在不同平台产出不同字节：`SKILL.md` 是**构建产物**，
+# 在 Windows 上构建会得到 CRLF 版本，跨平台构建不可复现；脚本的 shebang / 逐行
+# 解析也可能受影响。显式 eol=lf 后，仓库内与工作区都保持 LF。
+
+* text=auto eol=lf
+
+# 二进制：不参与文本/换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.tgz binary
