@@ -55,6 +55,8 @@
     写入后需重启 Gateway 才可见（见 activation_hint）。
 """
 
+from __future__ import annotations
+
 import json
 import os
 import shutil

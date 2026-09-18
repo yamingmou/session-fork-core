@@ -45,6 +45,11 @@ jobs:
         run: python -m py_compile fork_core/*.py scripts/*.py
 
       - name: 全量测试
+        # 测试里的 print 是「给开发者的报告」，不是产品行为，故统一给 UTF-8 让日志可读。
+        # 产品侧的编码行为由 tests/test_output_encoding.py（自带编码控制、跨平台可跑）
+        # 与下面的「Windows 真实编码冒烟」共同覆盖。
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           fail=0
           for f in tests/test_*.py; do
@@ -52,6 +57,16 @@ jobs:
             python "$f" || fail=1
           done
           exit $fail
+
+      - name: Windows 真实编码冒烟（**故意不设**任何编码环境变量）
+        if: runner.os == 'Windows'
+        run: |
+          # runner 是英文 Windows（cp1252）—— 最严苛的场景：它连 ✓ 都编不了。
+          # 本步不设 PYTHONIOENCODING，让 Python 用 Windows 的真实 locale。
+          # 探针用 ASCII 转义书写（避免把非 ASCII 塞进命令行传参）。
+          # 若没有 harden_output()，下面这条会以 UnicodeEncodeError、退出码 1 失败。
+          python -c "import sys;sys.path.insert(0,'.');from fork_core.adapter_base import harden_output;harden_output();print('\u4e2d\u6587\u4e0e emoji\uff1a\u4f1a\u8bdd\u5206\u53c9 \u2705 \U0001f500');print('SMOKE-OK')"
+          echo "✅ 未设编码变量也能正常输出（harden_output 在真实 locale 下生效）"
 
       - name: 换行符一致性（文本一律 LF；CRLF 会让跨平台产物不一致）
         run: |
@@ -64,4 +79,13 @@ jobs:
           echo "✅ 全部 LF"
 
       - name: 文档产物与源一致（SKILL.md 是构建产物，不能手改）
-        run: python scripts/build_skill.py --check
+        run: |
+          # 比对 git 跟踪的产物：先按源重建，再要求工作区无差异。
+          # （不用 --check：它还要求 dist/SKILL.fork.md 存在，而 dist/ 未入版本库）
+          python scripts/build_skill.py >/dev/null
+          if ! git diff --quiet -- SKILL.md; then
+            echo "::error::SKILL.md 与 skill/SKILL.src.md 不一致 —— 请跑 build_skill.py 后提交"
+            git diff --stat -- SKILL.md
+            exit 1
+          fi
+          echo "✅ SKILL.md 与源一致"

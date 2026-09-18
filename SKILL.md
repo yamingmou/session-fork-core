@@ -192,7 +192,7 @@ session-fork/
 4. **WSL 与原生 Windows 的会话库互不共享**（`/home/u/.codex` ↔ `C:\Users\u\.codex`）—— 你在哪边跑，就用哪边的库。
 
 > **目录位置两平台同构**（`~/.claude` ↔ `%USERPROFILE%\.claude`；`~/.codex` ↔ `%USERPROFILE%\.codex`）⇒ **`--adapter` 与其余参数完全一致**，平台差异只在"命令怎么写"。
-> 中文 Windows 终端若把输出里的装饰符号显示为 `?`，那是本技能的编码兜底在起作用（正文与全部中文不受影响）；想看原样可设 `PYTHONIOENCODING=utf-8`。
+> **输出编码**：本技能的 CLI 会自动把 stdout 固定为 UTF-8（**仅当当前编码容纳不了中文/emoji 时**），所以 Windows 上中文与 emoji 都能正常输出，不需要你额外设环境变量。若你的控制台仍显示乱码，那是控制台自身的代码页问题——`chcp 65001` 切到 UTF-8 即可。
 
 ### 分支怎么出现（**按产品**，与工具输出一致；不要凭记忆）
 

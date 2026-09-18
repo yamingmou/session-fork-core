@@ -10,6 +10,8 @@
   - providerData.conversationRequestId（UI "复制请求ID" 的来源）
 """
 
+from __future__ import annotations
+
 import datetime
 import json
 import os

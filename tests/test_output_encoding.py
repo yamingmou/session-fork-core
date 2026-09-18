@@ -5,10 +5,11 @@
 为什么（2026-09-18 实测）：中文 Windows 的默认代码页是 cp936(GBK)，而 stdout 的
 errors 默认是 `strict` —— 输出含 emoji 时 print 直接抛异常，**命令被"提示"本身打断**：
 实测 `--verify` 退出码 1，且报错行自身也含 ❌ 从而二次崩（连错误信息都打不出来）。
-`harden_output()` 把 stdout 降级为 errors="replace" 兜住这一点。
+`harden_output()` 在**非交互输出**时把 stdout 固定为 UTF-8，使中文与 emoji 都能完整输出。
 
 覆盖边界（报绿必须交代）：
-  ✅ 覆盖：编码器无法容纳输出字符时进程是否仍能完成输出，且在**管道**下（= AI 调用的形态）。
+  ✅ 覆盖：非 tty（管道/重定向）+ 非 UTF-8 locale 下，进程能否完成输出且**内容零损失**；
+           同时覆盖中文 Windows(cp936) 与英文 Windows(cp1252) 两种 locale。
   ❌ 未覆盖：真实 Windows 控制台（WindowsConsoleIO / UTF-16 路径）的行为 —— 需真机；
              也未覆盖 SQLite 锁竞争、`os.replace` 的目标占用行为（同属 Windows 特有）。
 
@@ -33,8 +34,8 @@ BODY = (
 )
 
 
-def run(with_fix: bool):
-    """在管道 + 非 UTF-8 编码下跑输出探针。"""
+def run(with_fix: bool, encoding: str = ENCODING):
+    """在管道 + 指定（非 UTF-8）编码下跑输出探针。"""
     src = "import os, sys\n"
     if with_fix:
         src += (
@@ -43,7 +44,7 @@ def run(with_fix: bool):
             "harden_output()\n"
         )
     src += BODY
-    env = dict(os.environ, PYTHONIOENCODING=ENCODING, FORK_TEST_ROOT=ROOT)
+    env = dict(os.environ, PYTHONIOENCODING=encoding, FORK_TEST_ROOT=ROOT)
     return subprocess.run([PY, "-c", src], env=env, capture_output=True)
 
 
@@ -54,8 +55,15 @@ assert fixed.returncode == 0, (
     % (fixed.returncode, fixed.stderr.decode("utf-8", "replace"))
 )
 assert b"PROBE-OK" in fixed.stdout, "输出被中途打断（未到达最后一行）"
-# 中文正文必须完整保留；只有装饰字符允许退化
-assert "\u4e2d\u6587\u6b63\u6587".encode(ENCODING) in fixed.stdout, "中文正文丢失（不该退化）"
+# 内容必须**零损失**：UTF-8 能容纳中文与 emoji —— 这正是用它替代 errors="replace" 的原因
+# （replace 在英文 Windows 的 cp1252 下会把全部中文变成 "?"：命令"成功"但信息全丢）
+assert "\u4e2d\u6587\u6b63\u6587".encode("utf-8") in fixed.stdout, "中文丢失（UTF-8 下不该丢）"
+assert "\U0001fa7a".encode("utf-8") in fixed.stdout, "emoji 丢失（UTF-8 下不该丢）"
+
+# ①b 英文 Windows（cp1252）：它连 ✓ 都编不了，是「中文全变成 ?」的高危场景
+win_en = run(True, "cp1252")
+assert win_en.returncode == 0, "cp1252 下加固后仍失败"
+assert "\u4e2d\u6587\u6b63\u6587".encode("utf-8") in win_en.stdout, "cp1252 下中文丢失"
 
 # ② 负例：不加固时同一段代码**必须失败** —— 证明本测试确有检出能力
 #    （若这条也通过，说明该环境本就能编码 emoji，本测试是空转的、报绿无意义）

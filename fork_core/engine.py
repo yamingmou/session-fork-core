@@ -5,6 +5,8 @@
 WorkBuddy / Claude Code / Codex 的差异全部被 adapter 吸收。
 """
 
+from __future__ import annotations
+
 import copy
 import json
 import os

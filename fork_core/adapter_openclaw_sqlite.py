@@ -51,6 +51,8 @@
   - 不做"树路径抽取"：与 JSONL 后端一致，截断是 `seq < cut` 前缀。
 """
 
+from __future__ import annotations
+
 import json
 import os
 import shutil

@@ -73,6 +73,8 @@
     ② `history_mode` 归一为 `paginated`。
 """
 
+from __future__ import annotations
+
 import json
 import os
 import shutil

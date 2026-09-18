@@ -51,6 +51,8 @@
     pi 原生文件后端与 OpenClaw 的 legacy/export 通道，不覆盖 SQLite 运行时。
 """
 
+from __future__ import annotations
+
 import json
 import os
 

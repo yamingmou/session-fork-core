@@ -13,6 +13,8 @@
 projects.json 旁路索引（fork.branches.json），不污染 Claude Code 自身索引。
 """
 
+from __future__ import annotations
+
 import json
 import os
 

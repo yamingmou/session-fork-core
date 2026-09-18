@@ -50,6 +50,8 @@
   ⇒ 它会参与 "最后一条 user 消息" 的标题摘要，属**外观层面**的小噪音，不影响截断正确性。
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sqlite3

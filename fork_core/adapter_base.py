@@ -74,20 +74,32 @@ def dumps_safe(obj: Any, **kwargs: Any) -> str:
 
 
 def harden_output() -> None:
-    """stdout 的编码兜底：非 UTF-8 终端下别让装饰字符打断输出。
+    """把 stdout 固定为 UTF-8 —— 仅当它当前的编码「容纳不了」中文与 emoji 时。
 
-    为什么需要（2026-09-18 实测）：中文 Windows 默认代码页 cp936(GBK)，
-    而 **stdout 的 errors 默认是 `strict`** —— 输出含装饰性字符（🩺 ✅ ❌ 📂 ⌘，
-    GBK 都编不了）时 print 直接抛 UnicodeEncodeError。实测 `--verify` 退出码 1，
-    且报错行自身也含 ❌ 从而二次崩（连错误信息都打不出来）。
-    改成 "replace" 后装饰字符退化为 "?"，正文与中文信息完整保留。
+    为什么需要（2026-09-18，CI 三平台实测）：Windows 上 stdout 的编码分两种情况 ——
+      · **真控制台**：CPython 走 WindowsConsoleIO，其 encoding 已是 `utf-8`（底层 UTF-16）
+        ⇒ 本就能输出全部 Unicode；
+      · **被重定向 / 管道 / MSYS pty**（AI 调用与 Git Bash 都属这类）：用 locale 编码
+        （中文 Windows=cp936、英文 Windows=cp1252）且 errors 默认 **strict** ⇒ 输出含中文
+        或 emoji 时 print 直接抛 UnicodeEncodeError，**命令被提示本身打断**：实测 `--verify`
+        退出码 1，且报错行自身含 ❌ 从而二次崩（连错误信息都打不出来）。
 
-    **只动 stdout**：stderr 的默认 errors 是 `backslashreplace`（Python 内置兜底，
-    本来就不抛；实测 GBK 下输出 `\\u26a0\\ufe0f` 字面且不报错），改它只会
-    平白改变既有输出形态。
+    为什么按 **encoding** 判断而不是 `isatty()`：Windows 上 `isatty()` 为真**不等于**走的是
+    ConsoleIO —— Git Bash 的 MSYS pty 就是 `isatty()=True` 但编码仍是 cp1252
+    （实测：用 isatty 判断时该场景照样崩）。而"encoding 是否为 Unicode 系"直接对应
+    「会不会编错」这个真问题。
+
+    为什么选 UTF-8 而不是 `errors="replace"`：UTF-8 能容纳中文与 emoji，**信息零损失**；
+    而 replace 在英文 Windows（cp1252）下会把**全部中文变成 "?"** —— 命令"成功"但 AI
+    读到的是一片问号，比崩得更隐蔽。管道用 UTF-8 也是 AI/CLI 生态的通用约定。
+
+    不动 stderr：其 errors 默认 backslashreplace，本就不会抛。
     """
     try:
-        sys.stdout.reconfigure(errors="replace")
+        enc = (sys.stdout.encoding or "").lower().replace("-", "").replace("_", "")
+        if enc.startswith("utf") or enc == "cp65001":
+            return  # 已是 Unicode 编码（含 Windows 真控制台的 utf-8）：不会编错，不干预
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError, OSError):
         pass  # 非 TextIOWrapper（如被替换为 BytesIO）或已关闭：无害跳过
 
