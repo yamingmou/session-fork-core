@@ -27,7 +27,7 @@ from . import available, create_fork, get_adapter, list_forks
 from .adapter_base import harden_output
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.16"
+VERSION = "2.4.17"
 
 
 def print_tree(metas) -> None:
