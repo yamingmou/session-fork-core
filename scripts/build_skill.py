@@ -59,6 +59,47 @@ WBS = re.compile(r"<!--WBS:-->(.*?)<!--:WBS-->", re.S)
 FKS = re.compile(r"<!--FKS:-->(.*?)<!--:FKS-->", re.S)
 
 
+def marker_errors(text: str) -> list:
+    """检查渠道标记**成对、有序、不交叉**——不能只查"有没有写错的标记"。
+
+    为什么必须有这一条（2026-09-19 定位）：`--check` 只比对「产物 vs 源」，
+    **源里标记错配时两边一起错，对不出来**。曾经就有一对错配潜伏了很久：
+    `<!--:FKS-->` 孤儿闭标记 + `<!--FKS:-->` 孤儿开标记 ⇒ fork-only 的两行留在了 wb 包，
+    于是 SkillHub / 开放平台那份 SKILL.md 里同时出现「统一写成 WorkBuddy 形式」和
+    「统一写成 `fork …`（你已用 pip 装了本工具）」两段自相矛盾的入口说明，外加一条
+    与本渠道无关的 pip 安装说明。
+    """
+    errors = []
+    pos = {}
+    for name in ("WBS", "FKS"):
+        opens = [m.start() for m in re.finditer(re.escape("<!--" + name + ":-->"), text)]
+        closes = [m.start() for m in re.finditer(re.escape("<!--:" + name + "-->"), text)]
+        pos[name] = (opens, closes)
+        if len(opens) != len(closes):
+            errors.append("%s 标记不配对：开 %d / 闭 %d" % (name, len(opens), len(closes)))
+            continue
+        for i, (o, c) in enumerate(zip(opens, closes), 1):
+            if c < o:
+                errors.append(
+                    "%s 第 %d 个闭标记出现在第 %d 个开标记之前"
+                    "（孤儿闭标记 ⇒ 这段内容两个渠道都会保留）" % (name, i, i)
+                )
+                break
+    # 交叉嵌套：一个渠道的标记不能落在另一个渠道的区间里面
+    for a, b in (("WBS", "FKS"), ("FKS", "WBS")):
+        oa, ca = pos.get(a, ([], []))
+        ob, cb = pos.get(b, ([], []))
+        for s, e in zip(oa, ca):
+            for p in ob + cb:
+                if s < p < e:
+                    errors.append("%s 区间内嵌了 %s 标记（交叉嵌套，渲染结果不可预期）" % (a, b))
+                    break
+            else:
+                continue
+            break
+    return errors
+
+
 def render(text: str, variant: str) -> str:
     """variant: 'wb' | 'fork'"""
     if variant == "wb":
@@ -177,6 +218,11 @@ def main() -> int:
     if re.search(r"<!--(WBS|FKS|:WBS|:FKS):?-->", text.replace("<!--WBS:-->", "").replace("<!--:WBS-->", "")
                  .replace("<!--FKS:-->", "").replace("<!--:FKS-->", "")):
         print("✗ 源文件里存在未闭合的标记")
+        return 1
+    m_errs = marker_errors(text)
+    if m_errs:
+        for e in m_errs:
+            print(f"✗ 渠道标记：{e}")
         return 1
 
     wb = render(text, "wb")

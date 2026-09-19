@@ -8,3 +8,7 @@ tests/samples-baseline-*.json
 
 # 本地校验脚本（不随包分发）
 scripts/doc_fact_check.py
+
+# 产品侧的会话记忆目录（本机产物；任何工具在仓库目录里跑都可能生成）
+# ⚠️ 必须忽略：它含本机绝对路径与会话内容，误提交即对外泄漏
+.workbuddy/
