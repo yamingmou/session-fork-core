@@ -56,7 +56,7 @@ SID_B = "bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb"
 SID_GHOST = "cccccccc-3333-3333-3333-cccccccccccc"  # 有标识、无文件
 # ⚠️ SID_C 是**更早**的 working 会话，且**先于** SID_A 插入。
 #    没有它，库里就只有一个 working 行 ⇒ `ORDER BY created_at DESC` 从来没被真正测到
-#    （独立审查 2026-09-15 抓出的盲区：去掉排序这个用例照样绿）。
+#    （2026-09-15 发现的盲区：去掉排序这个用例照样绿）。
 SID_C = "dddddddd-4444-4444-4444-dddddddddddd"
 
 

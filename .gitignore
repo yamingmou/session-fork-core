@@ -3,8 +3,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-tests/fossils.local.json
-tests/fossils-baseline-*.json
+tests/samples.local.json
+tests/samples-baseline-*.json
 
-# 自用工程产物（事实层核验脚本）：只在本机跑，不进公开仓
+# 本地校验脚本（不随包分发）
 scripts/doc_fact_check.py

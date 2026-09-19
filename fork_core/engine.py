@@ -158,7 +158,7 @@ def locate_before_current_turn(adapter, lines: list[dict]) -> tuple[int, int, st
 
 # 系统会在 user 消息首部注入上下文块（<system-reminder …>、<memory …> 等）。
 # 预览若直接取消息开头，打印出来的是这串 wrapper —— 人拿着它**核对不出"是不是我刚说的那句话"**，
-# 等于"打印了锚点原文"这件事白做（不重犯 #19④）。故跳过首部包裹块，取其后的**人类文本**。
+# 等于"打印了锚点原文"这件事白做。故跳过首部包裹块，取其后的**人类文本**。
 _WRAPPER_BLOCK = re.compile(r"^\s*<([a-zA-Z][\w-]*)(?:\s[^>]*)?>.*?</\1>\s*", re.DOTALL)
 
 
@@ -345,7 +345,7 @@ def _read_lines_checked(adapter, ref: str) -> tuple[list[dict], list[int], list[
     为什么不在这里 try/except 包住 `read_lines` 就算完：那只会把"坏行"重新变成
     "整轮体检崩掉+理由指错"——正是要修的形态。坏行必须**被跳过且被报出**。
 
-    ⚠️ 三种坐标的用途（第二轮独立审查给过混用的反例）：
+    ⚠️ 三种坐标的用途（混用会看错位置，已有反例）：
       · `bad_files` = 文件行号 → **只用于报给用户**（能在编辑器里直接定位）；
       · `bad_items` = 条目序号 → **一切与 at_seq / 边界比较的地方都用它**；
       · `objs` = 条目本身 → 一律取适配器的**原生**实现（`read_lines_checked` / `read_lines`）：
@@ -513,7 +513,7 @@ def _find_structural_residue(objs: list[dict], old_id: str, adapter=None) -> lis
     `sessionId`/`session_id` 上存在功能重叠（后者也能命中这两个键）。保留它的价值有二：
     ① 不依赖"前缀/追加区"如何划分——即便未来有人改动边界或宽容逻辑，这一类仍硬拦；
     ② 失败原因可明确报成"会话关联字段结构性残留"而非泛泛的残留。
-    它**不是**某条测试的专属兜底，别据此推断覆盖范围（2026-09-14 第四轮审查）。
+    它**不是**某条测试的专属兜底，别据此推断覆盖范围（2026-09-14 复核时明确）。
     """
     hits = []
 
@@ -686,7 +686,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 # 追加区的源 id 引用**一律只提示复核、不判失败**——v2.4.15 的定案。
                 #
                 # 曾试过"边界后未开新 user 回合就从严"（想关掉"污染正好写在边界后第一行"那类形态），
-                # 2026-09-19 第二轮独立审查把它否掉，两条理由都成立：
+                # 2026-09-19 复核后把它否掉，两条理由都成立：
                 #   ① 轴选错了：真实追加里"先开 user 回合"本来就是常态 ⇒ 它挡不住那类形态里最现实的
                 #      一种（边界后就是 user 消息、正文里带父 id），那一种照样落在"追加区"；
                 #   ② 代价无法证伪：本机只有 WorkBuddy 有真实分支（3 条被追加过、首行都是 user），
@@ -703,7 +703,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
 
                 # 坏行按"落在前缀内 / 追加区"分开处置（坏行不是"跳过就算"）。
                 # ⚠️ 坐标必须用**条目序号**（`bad_items`），不能用文件行号：`at_seq` / `boundary`
-                #    都是条目尺度，而文件行号把空行也算进去；混比会看错位置（第二轮审查给了反例：
+                #    都是条目尺度，而文件行号把空行也算进去；混比会看错位置（有反例：
                 #    文件第 3 行是坏行、但它只是第 2 个条目 ⇒ "3 <= 2" 为假，坏行被漏判）。
                 #    报给用户时仍用**文件行号**（能直接定位到编辑器里那一行）。
                 bad_prefix_files = [f for bi, f in zip(bad_items, bad_files) if bi <= boundary]
@@ -715,7 +715,7 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 reviewable = appended_hits if ok else []
                 fp_note = {
                     # 文案只承诺"前 boundary 行"——不能写成"这条分支的边界可信"：指纹对**追加区
-                    # 一无所知**，那样说是假的安心（独立审查点名的过度承诺）。另外这里刻意不用
+                    # 一无所知**，那样说是假的安心（属过度承诺）。另外这里刻意不用
                     # markdown 强调符：本串直接打印到终端，`**` 只会原样显示成噪音。
                     "match": f"前缀指纹与 fork 时一致（证据只覆盖前 {boundary} 行；追加区不在其内）",
                     "drift": f"⚠️ 前缀指纹与 fork 时不符：前 {boundary} 行已被改动",

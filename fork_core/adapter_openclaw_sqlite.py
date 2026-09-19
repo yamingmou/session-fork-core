@@ -266,7 +266,7 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
             if res.bad_lines:
                 bad.append(i)
         # bad_items 与 bad_lines 同为「第几条事件」：本后端没有"文件行号"这一层，
-        # 显式给出以免引擎回退到 bad_files 而让尺度契约含糊（第三轮审查指出）。
+        # 显式给出以免引擎回退到 bad_files 而让尺度契约含糊（显式给出才不含糊）。
         return ParseResult(objs=objs, bad_lines=bad, bad_items=list(bad))
 
     def read_raw(self, ref: str) -> str:
