@@ -82,7 +82,7 @@ import sqlite3
 import time
 import uuid
 
-from .adapter_base import TranscriptionAdapter, dumps_safe
+from .adapter_base import TranscriptionAdapter, dumps_safe, read_jsonl_file
 from .models import SessionMeta, VerifyItem
 
 #: 转录布局
@@ -325,12 +325,9 @@ class CodexAdapter(TranscriptionAdapter):
     # C. 读写
     # ------------------------------------------------------------------
     def read_lines(self, path: str) -> list[dict]:
-        out = []
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    out.append(json.loads(line))
-        return out
+        # 坏行跳过（不抛）：读取方不该因为一行坏掉就整轮崩；
+        # 需要坏行行号时走 read_lines_checked（见 adapter_base.parse_jsonl 的说明）。
+        return read_jsonl_file(path).objs
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
         """写产物 + 两处 `session_meta` 归一化（自包含分支的成立条件）。
@@ -477,7 +474,7 @@ class CodexAdapter(TranscriptionAdapter):
         return None
 
     def register_branch(self, src, new_id, dst_path, name, parent_id=None,
-                        at_seq=None) -> None:
+                        at_seq=None, prefix_fp=None) -> None:
         """写两层索引：`threads` 新行 + `thread_history_projection_state` 新行。
 
         时序：文件已由 finalize_branch 落位（引擎的发布动作），本方法再补索引。
@@ -574,6 +571,8 @@ class CodexAdapter(TranscriptionAdapter):
             "source_id": src_id,
             "path": dst_path,
             "at_seq": at_seq,
+            # 前缀指纹（v2.4.15）：体检据此核对"前 at_seq 行是否仍是 fork 当时的产物"
+            "prefix_fp": prefix_fp,
             "created_at": src.created_at,
             "artifact_bytes": n_bytes,
             "artifact_lines": n_lines,

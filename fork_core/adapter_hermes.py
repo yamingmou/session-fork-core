@@ -446,7 +446,8 @@ class HermesAdapter(TranscriptionAdapter):
             cand = f"{base} ({n})"
         return f"{base} {uuid.uuid4().hex[:6]}"
 
-    def register_branch(self, src, new_id, dst_path, name, parent_id=None, at_seq=None) -> None:
+    def register_branch(self, src, new_id, dst_path, name, parent_id=None, at_seq=None,
+                        prefix_fp=None) -> None:
         # 产品的会话行随 finalize 落地；这里只写**旁路谱系索引**（引擎体检用）
         if name:
             self._set_title(new_id, name)
@@ -458,6 +459,8 @@ class HermesAdapter(TranscriptionAdapter):
             "source_id": src.id,
             "path": dst_path,
             "at_seq": at_seq,
+            # 前缀指纹（v2.4.15）：体检据此核对"前 at_seq 行是否仍是 fork 当时的产物"
+            "prefix_fp": prefix_fp,
             "created_at": src.created_at,
         })
         self._write_index(data)

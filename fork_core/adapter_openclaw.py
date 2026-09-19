@@ -158,7 +158,8 @@ class OpenClawJsonlAdapter(PiAdapter):
                 return v
         return None
 
-    def register_branch(self, src, new_id, dst_path, name, parent_id=None, at_seq=None) -> None:
+    def register_branch(self, src, new_id, dst_path, name, parent_id=None, at_seq=None,
+                        prefix_fp=None) -> None:
         """写两处索引，顺序：OpenClaw 原生索引 → 旁路谱系索引。
 
         先写产品索引：万一失败，旁路索引尚未写入，引擎的 unregister 兜底更干净；
@@ -187,7 +188,8 @@ class OpenClawJsonlAdapter(PiAdapter):
         index[key] = entry
         self._write_sessions_index(index)
         # 旁路谱系索引（继承 pi 的实现）
-        super().register_branch(src, new_id, dst_path, name, parent_id=parent_id, at_seq=at_seq)
+        super().register_branch(src, new_id, dst_path, name, parent_id=parent_id,
+                                at_seq=at_seq, prefix_fp=prefix_fp)
 
     def unregister_branch(self, new_id: str) -> None:
         # 先清旁路，再清产品索引

@@ -27,7 +27,7 @@ from . import available, create_fork, get_adapter, list_forks
 from .adapter_base import harden_output
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
 
-VERSION = "2.4.14"
+VERSION = "2.4.15"
 
 
 def print_tree(metas) -> None:
@@ -214,17 +214,28 @@ def run_verify(adapter) -> None:
     items = verify_environment(adapter)
     print(f"🩺 fork --verify — {adapter.name} 真库体检（验证分级：L1 fixture / L2 真库 / L3 产品终验）")
     print()
-    ok_all = True
+    n_fail = 0
+    n_review = 0
     for it in items:
-        mark = "✅" if it.ok else "❌"
+        if not it.ok:
+            mark = "❌"
+            n_fail += 1
+        elif getattr(it, "review", False):
+            mark = "⚠️"
+            n_review += 1
+        else:
+            mark = "✅"
         print(f"  {mark} [{it.level}] {it.name}: {it.detail}")
-        ok_all = ok_all and it.ok
     print()
-    if ok_all:
-        print("✅ 全部通过 — 该环境达到 L2 真库级验证，可安全打分支/发布")
-    else:
-        print("❌ 存在失败项 — 请修复后再打分支/发布（L2 真库验证是发布前必须项）")
+    if n_fail:
+        print(f"❌ 存在失败项（{n_fail} 项）— 请修复后再打分支/发布（L2 真库验证是发布前必须项）")
         sys.exit(1)
+    if n_review:
+        # "需复核"不阻塞：这是"查得到疑点、但断不定是缺陷"的一档（典型：你在分支里记录了血缘）。
+        # 若把它判成失败，闸门会长期常驻红 ⇒ 真问题反而被淹没（v2.4.15 的取舍，见 engine 说明）。
+        print(f"✅ 无失败项 — 但有 {n_review} 项需人工复核（见上 ⚠️；通常是你自己在分支里记录了血缘）")
+    else:
+        print("✅ 全部通过 — 该环境达到 L2 真库级验证，可安全打分支/发布")
 
 
 def run_fix(fix_session_id: str) -> None:

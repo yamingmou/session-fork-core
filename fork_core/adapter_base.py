@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import time
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .models import SessionMeta, VerifyItem
@@ -26,6 +27,88 @@ from .models import SessionMeta, VerifyItem
 # ----------------------------------------------------------------------
 # 序列化安全阀（2026-09-16 新增）：孤立代理致写出崩溃的**公共**修法
 # ----------------------------------------------------------------------
+@dataclass
+class ParseResult:
+    """逐行解析的结果：条目 + **坏行行号**（1-based，按文件行数计）。
+
+    为什么要带着坏行号返回，而不是直接抛异常或静默跳过（2026-09-19）：
+      · 抛异常：一个坏行就让**整轮体检崩掉**，其余检查全被跳过，而且报错理由指向
+        "检查器"而不是"哪一行坏了"——排查成本高（独立审查点名的正是这条）；
+      · 静默跳过：体检会在"少看了一部分内容"的前提下报绿，等于把未知当已知。
+    所以：**不抛、也不静默**——跳过它继续检查，但把坐标交出去，由调用方决定怎么说。
+
+    ⚠️ 两种坐标**不可混用**（第二轮独立审查给过反例）：
+      · `bad_lines` = **文件行号**（含空行的计数）——报给用户看，能直接在编辑器里定位；
+      · `bad_items` = **条目序号**（跳过空行后的第几条）——与 `at_seq`/边界同一尺度，
+        "它落在前缀内还是追加区"的比较**必须**用它，否则遇到空行就会看错位置。
+    """
+
+    objs: list[dict] = field(default_factory=list)
+    bad_lines: list[int] = field(default_factory=list)
+    bad_items: list[int] = field(default_factory=list)
+
+
+def parse_jsonl(text: str) -> "ParseResult":
+    """逐行解析 JSONL：坏行记坐标，不抛。**空行不算坏行**（换行/空行是合法排版）。
+
+    "坏行"**可能**出现：产品在写入过程中被读取时，末尾会有半行（写到一半被截断）。
+    ⚠️ 证据等级（2026-09-19 自检）：本机真库 165 个 transcript **实测 0 例坏行** ——
+    所以这是**防御性**处理，不是"已观测到的高频故障"，别把它当成常见场景来宣称。
+    做它的真实理由有两条，都不依赖"常见"：① 旧实现一遇坏行会让**整轮体检崩掉**、
+    其余检查全被跳过且报错理由指错（独立审查点名）；② 静默跳过会让"少看了一部分内容"
+    被当成全绿。所以这个函数是**读取路径的统一入口**：所有产品的 `read_lines` 都应经它。
+
+    顶层不是对象的行（如一行是数组/字符串）也计入坏行：引擎各处都按 dict 处理，
+    放行它只会在更远处崩；计入坏行 = **被跳过且被报出**，比静默丢失或远处崩更诚实。
+    """
+    objs: list[dict] = []
+    bad_lines: list[int] = []
+    bad_items: list[int] = []
+    item_no = 0
+    for i, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        item_no += 1
+        try:
+            o = json.loads(line)
+        except Exception:
+            bad_lines.append(i)
+            bad_items.append(item_no)
+            continue
+        if isinstance(o, dict):
+            objs.append(o)
+        else:
+            bad_lines.append(i)
+            bad_items.append(item_no)
+    return ParseResult(objs=objs, bad_lines=bad_lines, bad_items=bad_items)
+
+
+def read_jsonl_file(path: str) -> "ParseResult":
+    """读文件并解析（读取路径的统一实现，见 parse_jsonl 的说明）。"""
+    with open(path, encoding="utf-8") as f:
+        return parse_jsonl(f.read())
+
+
+def read_jsonl_head(path: str, n: int) -> Optional[str]:
+    """只读「前 n 个非空行」的原始文本；文件不存在 → None。
+
+    性能用（2026-09-19）：前缀指纹只关心前 n 行，而整份产物可能上百 MB
+    （真机最大 107MB / 19,195 行）。**必须与「全量读 + 取前 n 个非空行」逐字节等价**，
+    否则指纹会算出假差异——故取行口径与 verify 完全一致（按非空行计数）。
+    """
+    if not os.path.isfile(path):
+        return None
+    out: list[str] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            out.append(line)
+            if len(out) >= n:
+                break
+    return "".join(out)
+
+
 def dumps_safe(obj: Any, **kwargs: Any) -> str:
     """把对象序列化成「保证可 utf-8 写出」的 JSON 文本（行级与文件级通用）。
 
@@ -227,10 +310,18 @@ class TranscriptionAdapter:
         name: str,
         parent_id: Optional[str] = None,
         at_seq: Optional[int] = None,
+        prefix_fp: Optional[str] = None,
     ) -> None:
         """在会话索引中注册新分支（各产品不同：数据库插入 / 索引文件 / 纯文件）。
 
-        at_seq = 截断点（会话级分支的"快照点"，谱系可回/可审计）。
+        at_seq    = 截断点（会话级分支的"快照点"，谱系可回/可审计）。
+        prefix_fp = 该前缀的指纹（引擎算好传入，v2.4.15）。
+
+        **适配器契约（新增能力，务必遵守）**：实现本方法的产品应把 `prefix_fp` 原样存进
+        自己的谱系记录（与 `at_seq` 同一条）。它让体检能核对"边界是否可信"：指纹一致
+        ⇒ 前 `at_seq` 行确为 fork 原样产物，边界之后的引用只可能是 fork 之后写入的内容。
+        **不存也不会坏**：引擎按"未记录指纹"处理，体检降级为提示复核（不判失败）；
+        但那样该产品的用户就少了这层证据。引擎**先探测签名再传参**，故老实现不会因此报错。
         """
         raise NotImplementedError
 
@@ -352,13 +443,35 @@ class TranscriptionAdapter:
     #   - 默认实现严格保持既有 JSONL 行为，**旧适配器零改动**。
     # ------------------------------------------------------------------
     def read_lines(self, ref: str) -> list[dict]:
-        """按 ref 读出有序条目序列。默认：逐行 JSON 文件。"""
-        out = []
-        with open(ref, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    out.append(json.loads(line))
-        return out
+        """按 ref 读出有序条目序列。默认：逐行 JSON 文件（**坏行跳过，不抛**）。
+
+        坏行不抛是有意的（理由见 parse_jsonl）：读取方不该因为一行坏掉就整轮崩掉。
+        需要知道"跳过了哪些行"时用 `read_lines_checked`。
+        """
+        return self.read_lines_checked(ref).objs
+
+    def read_lines_checked(self, ref: str) -> "ParseResult":
+        """`read_lines` + **坏行行号**（体检等"要如实交代"的场景用）。**单次读取**，不重复解析。
+
+        ⚠️ 实现要点（2026-09-19 踩过）：**不能**用 `parse_jsonl(self.read_raw(ref))` 做默认实现——
+        SQLite 后端的行里有 BLOB(`bytes`)，经 `read_raw`（它有 `default=str`）往返会被**降级成字符串**：
+        既破坏保真（写出的分支内容变形），又会凭空造出"源 id 命中"（二进制里恰好含那串字节）。
+        所以：
+          · 文件型引用 → 直接逐行解析（JSONL 里只有 `dict`，与旧行为一致）；
+          · 非文件引用（SQLite 等）→ 走**该后端的原生 `read_lines`**，坏行信息由后端自行覆盖本方法提供。
+        """
+        if os.path.isfile(ref):
+            return read_jsonl_file(ref)
+        return ParseResult(objs=list(self.read_lines(ref)), bad_lines=[])
+
+    def read_raw_head(self, ref: str, n: int) -> Optional[str]:
+        """只读「前 n 个非空行」的原文（性能用）；**非文件引用 → None**，调用方回退全量读。
+
+        用途：前缀指纹只需要前 n 行，而产物可能上百 MB（真机最大 107MB）。
+        取行口径必须与 `read_raw` 侧的 `_raw_lines`（去空行）完全一致，否则会算出假差异。
+        SQLite 等非文件后端沿用默认实现返回 None ⇒ 自动退回全量读（正确性优先）。
+        """
+        return read_jsonl_head(ref, n)
 
     def read_raw(self, ref: str) -> str:
         """读出可做行级校验的原始文本。默认：文件内容原样。

@@ -8,6 +8,8 @@ WorkBuddy / Claude Code / Codex 的差异全部被 adapter 吸收。
 from __future__ import annotations
 
 import copy
+import hashlib
+import inspect
 import json
 import os
 import re
@@ -296,19 +298,127 @@ def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) ->
     return errs
 
 
+def _register_branch_with_fp(adapter, src, new_id: str, dst: str, name: str, *,
+                             parent_id: str, at_seq: int, prefix_fp: str | None) -> None:
+    """调用 `adapter.register_branch`，并在其签名支持时一并传入前缀指纹。
+
+    为什么先探测签名、而不是直接多传一个关键字实参：`register_branch` 是**公开扩展点**
+    （本仓库之外也有人写自己的 adapter，文档鼓励这么做）。多传一个参数会让老 adapter
+    直接 `TypeError`、**整次 fork 失败**——为一条"加分证据"付这个代价不值得。
+    不支持就退回旧调用，代价只是该产品的分支走"未记录指纹"路径（体检里提示复核）。
+    """
+    kw = dict(src=src, new_id=new_id, dst_path=dst, name=name,
+              parent_id=parent_id, at_seq=at_seq)
+    try:
+        params = inspect.signature(adapter.register_branch).parameters
+        supports = "prefix_fp" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    except Exception:
+        # 自省失败（装饰器改签名等）一律退回旧调用：保守侧只少一层证据，
+        # 绝不因为"多传一个参数"让整次 fork 失败（也不重试调用——重试可能重复登记）。
+        supports = False
+    if supports:
+        kw["prefix_fp"] = prefix_fp
+    return adapter.register_branch(**kw)
+
+
+# ----------------------------------------------------------------------
+# 分支前缀指纹（v2.4.15）：把"边界可信"从假设变成可核对的事实
+# ----------------------------------------------------------------------
+
+PREFIX_FP_ALGO = "sha256-1"
+"""指纹算法标识（随记录落盘，将来换算法时能识别旧值 ⇒ 不会把旧值当"漂移"）。"""
+
+
+def _raw_lines(text: str) -> list[str]:
+    """行归一化——与 verify_branch 取行的口径**完全一致**（去空行）。
+
+    两侧（fork 时 / 体检时）必须用同一口径，否则指纹会比出假差异。
+    """
+    return [l for l in text.splitlines() if l.strip()]
+
+
+def _read_lines_checked(adapter, ref: str) -> tuple[list[dict], list[int], list[int]]:
+    """读条目 + 坏行的两种坐标：`(objs, bad_files, bad_items)`。
+
+    为什么不在这里 try/except 包住 `read_lines` 就算完：那只会把"坏行"重新变成
+    "整轮体检崩掉+理由指错"——正是要修的形态。坏行必须**被跳过且被报出**。
+
+    ⚠️ 三种坐标的用途（第二轮独立审查给过混用的反例）：
+      · `bad_files` = 文件行号 → **只用于报给用户**（能在编辑器里直接定位）；
+      · `bad_items` = 条目序号 → **一切与 at_seq / 边界比较的地方都用它**；
+      · `objs` = 条目本身 → 一律取适配器的**原生**实现（`read_lines_checked` / `read_lines`）：
+        SQLite 后端的行里有 BLOB(bytes)，任何"经 read_raw 往返"的读法都会把它降级成字符串
+        ——既破坏保真、又可能凭空造出"源 id 命中"（2026-09-19 真被全量测试拦住过一次）。
+    """
+    fn = getattr(adapter, "read_lines_checked", None)
+    if callable(fn):
+        try:
+            r = fn(ref)
+            bad_files = list(r.bad_lines)
+            bad_items = list(getattr(r, "bad_items", None) or bad_files)
+            return list(r.objs), bad_files, bad_items
+        except Exception:
+            pass
+    return list(adapter.read_lines(ref)), [], []
+
+
+def _prefix_fingerprint(adapter: TranscriptionAdapter, ref: str, n: int) -> str | None:
+    """对产物「前 n 行」取指纹；不可读 / 不足 n 行 / n 非法 → None。
+
+    为什么需要它（2026-09-19 设计，针对"体检常驻误报"）：
+      判断"源 id 是否残留"必须有一个边界（`at_seq` = fork 当时复制出的前缀行数），
+      而**这个边界过去只是个假设**——没有任何办法核对"前 n 行是否仍是 fork 当时的产物"。
+      于是只有两种坏选择：要么把边界之后的整段也从严检查（⇒ 你在分支里记录一次血缘就
+      常驻误报，闸门变"狼来了"），要么放宽但说不清依据。指纹把边界变成**可核对的事实**：
+      fork 时把前 n 行的哈希随 `at_seq` 一起写进谱系，体检时重算比对。
+        一致 = 这 n 行确是 fork 原样产物 ⇒ 边界可信（之后的差异只能来自 fork 之后）；
+        不一致 = 前缀已被改动 ⇒ **据实报"前缀漂移"**，不再靠猜。
+      ⚠️ 它证明的是"前 n 行未被改动"，**不是**"n 恰好等于当初的复制行数"——后者由
+      create 期的硬校验保证（`verify_branch` 断言产物行数 == cut，不等则拒绝落位）。
+
+    取指纹一律用**已落位**的产物：SQLite 后端的 tmp 与 dst 是两条取数路径
+    （`_pending` vs 数据库），从 dst 取才能与体检侧同源，否则会凭空报"漂移"。
+    """
+    try:
+        if not isinstance(n, int) or n <= 0:
+            return None
+        # 优先"只读前 n 行"（产物可能上百 MB，真机最大 107MB / 19,195 行）：
+        # 适配器能流式读就给头部，读不了（SQLite 等非文件后端）就回退全量读——正确性优先。
+        head = getattr(adapter, "read_raw_head", None)
+        text = None
+        if callable(head):
+            try:
+                text = head(ref, n)
+            except Exception:
+                text = None
+        if text is None:
+            text = adapter.read_raw(ref)
+        lines = _raw_lines(text)
+        if len(lines) < n:
+            return None
+        block = "\n".join(lines[:n]).encode("utf-8")
+        return PREFIX_FP_ALGO + ":" + hashlib.sha256(block).hexdigest()
+    except Exception:
+        return None  # 指纹是"加分证据"：取不到不该让 fork 或体检失败
+
+
 # ----------------------------------------------------------------------
 # fork --verify / --doctor：真库体检（把"真库验证"从靠用户兜底变成内置强制检查）
 # ----------------------------------------------------------------------
 
-def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, bool, str, int | None]]:
+def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, bool, str, int | None, str | None]]:
     """收集真实会话 transcript：分类为 源会话 / 分支，各自取最新 limit 个。
 
-    返回 [(path, session_id, is_branch, parent_id_or_empty, at_seq_or_None)]。
+    返回 [(path, session_id, is_branch, parent_id_or_empty, at_seq_or_None, prefix_fp_or_None)]。
     分支识别：查谱系索引（lineage forks / branches）——分支必须用其 parent_id（源 id）
     做残留校验（分支正确时源 id 已被替换干净，若残留 = rewrite 回归）。
     at_seq = fork 当时的快照点（复制出的前缀行数），分支校验必须用它当边界：
     fork 后产品会继续往分支文件追加消息，用"当前最后一轮"当边界会把追加内容
     误判成残留（2026-09-14 修复）。
+    prefix_fp = fork 时该前缀的指纹（v2.4.15），用来**核对边界是否可信**；
+    老记录没有这个字段 ⇒ None ⇒ 体检按"无法证实边界"处理（只提示复核，不判失败）。
     """
     found: list[tuple[str, str]] = []
     # 会话枚举交给 adapter：文件名≠会话 id 的产品（pi 是 <时间戳>_<id>.jsonl）必须自行覆盖，
@@ -326,6 +436,7 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, b
     # （2026-09-14 审查）。宁可退化为"当源会话检查"，也不要制造假红。
     branch_parent: dict[str, str] = {}
     branch_atseq: dict[str, int | None] = {}
+    branch_fp: dict[str, str | None] = {}
     try:
         if hasattr(adapter, "_lineage_get"):
             data = adapter._lineage_get()
@@ -335,6 +446,9 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, b
             branch_atseq = {
                 fid: f.get("at_seq") for fid, f in data.items() if f.get("parent_id")
             }
+            branch_fp = {
+                fid: f.get("prefix_fp") for fid, f in data.items() if f.get("parent_id")
+            }
         elif hasattr(adapter, "_read_index"):
             data = adapter._read_index()
             for f in data.get("branches", []):
@@ -342,6 +456,7 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, b
                 if f.get("id") and pid:
                     branch_parent[f["id"]] = pid
                     branch_atseq[f["id"]] = f.get("at_seq")
+                    branch_fp[f["id"]] = f.get("prefix_fp")
     except Exception:
         pass
 
@@ -349,9 +464,10 @@ def _collect_real_transcripts(adapter, limit: int = 3) -> list[tuple[str, str, b
     branches = [f for f in found if f[1] in branch_parent]
     result = []
     for path, sid in sources[:limit]:
-        result.append((path, sid, False, "", None))
+        result.append((path, sid, False, "", None, None))
     for path, sid in branches[:limit]:
-        result.append((path, sid, True, branch_parent.get(sid, ""), branch_atseq.get(sid)))
+        result.append((path, sid, True, branch_parent.get(sid, ""),
+                       branch_atseq.get(sid), branch_fp.get(sid)))
     return result
 
 
@@ -421,15 +537,45 @@ def _find_structural_residue(objs: list[dict], old_id: str, adapter=None) -> lis
 
 
 _SESSION_ID_KEYS = ("sessionId", "session_id")
+"""**路由**键（结构性残留检查只认这两个）——证据与**已知缺口**都写在这里，别只看清单。
+
+证据（2026-09-19 真库普查；可复跑，脚本已随仓库提供）:
+
+    python3 tools/routing-key-survey.py keys --projects ~/.workbuddy/projects
+    python3 tools/routing-key-survey.py branches --home ~
+
+    覆盖：**约 167 个** WorkBuddy transcript / **约 23.5 万**次出现，判据＝「JSON 键 + 值含 uuid 形态」
+    （数字是**撰写时的快照**——真库会持续增长，复跑同一命令得到的数只会更大，口径不变）
+
+    键名                                出现次数      说明
+    sessionId                            235,185     会话路由 → 本检查的目标
+    parentId                             217,089     **消息级**树链（合法保留源 id，有意不查）
+    logicalParentId                          304     **消息级**（同上）
+    conversationId / threadId / thread_id / sessionKey / parentUuid …   **0**
+
+⚠️ **已知缺口（不是"已覆盖"）**：本清单只覆盖"用 `sessionId` 命名路由键"的形态
+   （WorkBuddy、Claude Code、Hermes 的 `messages.session_id` 都在其列）。**别的后端不在**：
+   Codex 的路由键是 `payload.thread_id`（其 adapter docstring 记载 59 处；`payload.session_id`
+   已覆盖），pi 的会话标识在 `header.id`、OpenClaw 在 `header.id` / `current_session_id`（键名就是 `id`，
+   无法与消息级 `id` 靠键名区分）。
+   ⇒ 后果是**偏漏检、不会误报**：这些后端若在**追加区**出现"路由键＝父 id"，只会给"需复核"
+   而不是硬失败；**前缀区**仍由键无关的字符串搜索覆盖（那才是主拦截层）。
+   ⇒ 要不要把某个键升级为硬拦：**先跑上面两条命令取证，再改**——盲加键名会命中
+   `text` / `content` / `arguments` 这类内容字段（真库实测：13 条真实分支里 8 条会被新判红），
+   等于把"在分支里写血缘"这种正常内容重新变成常驻红。
+"""
 
 
-# 工具/函数 I/O 数据字段（**段级**精确匹配，避免 "outputsList" 这类误伤）。
-# fork 之后追加的消息里，这些字段出现源 id 通常是**合法对话内容**——典型：
-# `ls ~/.workbuddy/tasks` 的输出里恰好有个目录叫源会话 UUID（2026-09-14 真实误报案例）。
-# 注意：宽容**仅在追加区确实开启新回合时**生效（见 verify_environment），
-# 否则被错误放大的"追加区"会借它掩盖真污染。
+# 工具/函数 I/O 数据字段 + 思维链（**段级**精确匹配，避免 "outputsList" 这类误伤）。
+# 用途（v2.4.15 起）：只用来**给"需复核"的命中分类**（哪些是工具 I/O / 思维链、哪些是正文），
+# 不再决定"是否判失败"——边界之外的命中一律只提示复核（见 verify_environment 的说明）。
+# 之所以把它们单列：fork 之后追加的消息里，这些字段出现源 id 属**必然**——
+#   · 工具输出：真实案例，`ls ~/.workbuddy/tasks` 的输出里恰好有个目录叫源会话 UUID；
+#   · 思维链（`reasoning`）：模型"想"的时候会把刚读到的 id 复述一遍，几乎必现
+#     （2026-09-16 补入：当时漏了它，导致本该是"工具/思维链"的命中被算进"正文"）。
 _TOOL_IO_FIELD_NAMES = frozenset({
     "output", "arguments", "argumentsDisplayText", "toolResult", "renderer", "error",
+    "reasoning",
 })
 
 
@@ -466,29 +612,49 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
         raw_keys = getattr(adapter, "_RAW_KEYS", set())
         n_src = sum(1 for r in real if not r[2])
         n_br = len(real) - n_src
-        for path, sid, is_branch, parent_id, at_seq in real:
-            lines = adapter.read_lines(path)
+        for path, sid, is_branch, parent_id, at_seq, prefix_fp in real:
+            # 带坏行信息读取（v2.4.15 补）：坏行**不抛也不静默**——跳过它继续检查，
+            # 但把行号交出来，下面按"落在前缀内还是追加区"分别处置。
+            lines, bad_files, bad_items = _read_lines_checked(adapter, path)
             if not lines:
                 items.append(VerifyItem(f"真实数据验证 {sid[:8]}", "L2", False, "transcript 为空或不可读"))
                 continue
             if is_branch:
-                # 分支产物验证：源 id 不得残留（黑名单除外）。三层判定，从严到宽：
-                #   ① 前缀（= fork 复制出的部分，边界取谱系快照点 at_seq）：任意字段残留 → 硬失败；
-                #   ② 全文件 sessionId 结构性残留（不依赖边界）→ 硬失败；
-                #   ③ 快照点之后的追加区：**只对工具/函数 I/O 字段宽容**（那里出现源 id 通常
-                #      是合法对话内容——真实案例：追加的 `ls` 输出里恰好有个目录叫源会话 UUID），
-                #      其余字段（如消息正文 content[].text）出现源 id 仍判污染。
-                # ③ 是关键：它让"at_seq 记录偏小、跳过了真实前缀的一段"不再**静默漏检**——
-                # 被跳过的部分若含非工具字段残留，一样会被抓（2026-09-14 第二轮复核）。
-                # 即：边界只决定"哪一段算前缀"，不决定"是否检查"。
-                boundary = at_seq if isinstance(at_seq, int) and at_seq > 0 else None
-                if boundary is not None and (
-                    boundary > len(lines)
-                    or not adapter.is_assistant_message(lines[boundary - 1])
-                ):
+                # 分支产物验证：源 id 不得残留（黑名单除外）。**两层判定，判据不同、后果不同**：
+                #
+                #  【硬失败】产物自身的问题——必定是真问题，且改一下就能修好：
+                #   ① 前缀残留（边界之内）：fork 复制出的那一段仍留着源 id ⇒ rewrite 回归 /
+                #      产物被改动。前缀是**引擎的产物**，出现在那里的源 id 一定是残留。
+                #   ② 全文件 sessionId/session_id 结构性残留：不依赖任何边界。分支产物里所有
+                #      会话关联字段都应是分支自己的 id；等于源 id ⇒ 产品会按它把消息路由回源会话。
+                #
+                #  【需复核】边界之外的引用——**不是引擎的产物**，因此不判失败：
+                #   ③ 边界（`at_seq` = fork 复制出的前缀行数）之后的内容，是 fork **之后**由产品
+                #      写入的（你继续对话、产品追加工具结果）。那里出现源 id 属正常：分支的常见
+                #      用途之一就是**记录自己的血缘**（"我的父会话是谁"），而记录血缘必然写下源 id。
+                #      2026-09-19 真机取证：两处命中的实际内容分别是"读谱系文件的输出"与
+                #      "身份登记表 + 自报正文"，主题全是"我从哪来"。
+                #
+                #  ⚠️ 代价与兜底（有意选择，不是疏漏）：降级同时放弃了"at_seq 被记小 ⇒ 被跳过的
+                #      区域里藏着真残留"这一形态的**硬拦**。兜底有三条：① create 期整文件零残留
+                #      硬校验（落位前拦截：任何 rewrite 回归都在那里挂掉，不会落地）；② 结构性检查
+                #      完全不看边界；③ 前缀指纹（见下）能查出"边界之内被改动"。
+                #
+                #  为什么必须降级（v2.4.15）：③ 与"在分支里记录血缘"**在字节上不可区分**，
+                #      旧判据的实际效果是"每正常用一次分支就常驻一条红"。闸门一旦常驻红就变成
+                #      "狼来了"——真问题会被淹没在误报里，而 `--verify` 的全部价值就是发布前拦截。
+                #      宁可留下可解释、可消解的"需复核"，也不要制造无效的红。
+                n = at_seq if isinstance(at_seq, int) and at_seq > 0 else None
+                if n is not None and (n > len(lines) or not adapter.is_assistant_message(lines[n - 1])):
                     # at_seq 结构性不可信（越界 / 不是完整 assistant 回复收尾）→ 弃用，
-                    # 退回更宽的"当前最后一轮"边界：只会误报，不会漏检。
-                    boundary = None
+                    # 退回"当前最后一轮"边界：此时命中会落到前缀侧 ⇒ 仍是硬失败（从严）。
+                    n = None
+                if n is not None and any(bi <= n for bi in bad_items):
+                    # 快照点之内有坏行 ⇒ 解析后的条目序列在那一带是断裂的，边界落点不再可信
+                    # （可能把真残留认成"追加区"）⇒ 弃用边界，从严。
+                    # ⚠️ 这里必须比**条目序号** `bad_items`，不是文件行号（见 parse_jsonl 的坐标说明）。
+                    n = None
+                boundary = n
                 if boundary is None:
                     try:
                         boundary, _ = locate_last_reply(adapter, lines)
@@ -497,48 +663,100 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                         continue
                 boundary = min(boundary, len(lines))
 
+                # 边界证据 = 前缀指纹比对。只在"边界就是谱系快照点"时才可比——
+                # 长度不同（如 at_seq 被弃用、改用最后一轮）就不是同一批行，比了也没意义。
+                if n is not None and prefix_fp:
+                    fp_now = _prefix_fingerprint(adapter, path, n)
+                    if fp_now is None:
+                        fp_verdict = "unreadable"
+                    else:
+                        fp_verdict = "match" if fp_now == prefix_fp else "drift"
+                elif prefix_fp:
+                    fp_verdict = "skipped"
+                else:
+                    fp_verdict = "absent"
+
                 prefix_hits = _find_residue(lines[:boundary], parent_id, raw_keys)
                 tail_hits = (
                     _find_residue(lines[boundary:], parent_id, raw_keys, start=boundary + 1)
                     if len(lines) > boundary else []
                 )
-                # 宽容只在"追加区确实开启新回合"时生效：合法追加必然是一条新的 user 回合
-                # （两个真实分支实测：L(at_seq+1) 都是 user 消息）。若边界后紧跟的不是 user
-                # 消息，这段更像"被错误放大成追加区的前缀"——此时一律从严，宁可误报，
-                # 也不让 at_seq 记录偏小借宽容掩盖真污染（2026-09-14 第三轮复核）。
-                tail_is_new_turn = (
-                    len(lines) > boundary and adapter.is_user_message(lines[boundary])
-                )
-                tail_hard = [
-                    p for p in tail_hits
-                    if not (tail_is_new_turn and _is_tool_io_path(p))
-                ]
                 structural = _find_structural_residue(lines, parent_id, adapter)
 
-                bad = prefix_hits + tail_hard + structural
-                ok = not bad
+                # 追加区的源 id 引用**一律只提示复核、不判失败**——v2.4.15 的定案。
+                #
+                # 曾试过"边界后未开新 user 回合就从严"（想关掉"污染正好写在边界后第一行"那类形态），
+                # 2026-09-19 第二轮独立审查把它否掉，两条理由都成立：
+                #   ① 轴选错了：真实追加里"先开 user 回合"本来就是常态 ⇒ 它挡不住那类形态里最现实的
+                #      一种（边界后就是 user 消息、正文里带父 id），那一种照样落在"追加区"；
+                #   ② 代价无法证伪：本机只有 WorkBuddy 有真实分支（3 条被追加过、首行都是 user），
+                #      其余 5 个后端的追加首行**没有证据**是 user——Claude Code 有 compaction 的
+                #      `summary` 条目，Hermes / OpenClaw 有血缘记录条目。若它们先写非 user 条目，
+                #      这条规则会把**合法内容**判失败，等于重新制造"常驻红"（本版要消灭的东西）。
+                # ⇒ 保护"前缀"靠另外三层、都不依赖它：创建期整文件零残留硬校验、前缀的键无关字符串
+                #   搜索、指纹漂移检测。追加区不是引擎的产物，只提示复核。
+                appended_hits = list(tail_hits)
+                # 边界后不是新回合时仍**据实提示**（只是不升级为失败）：信号有价值，但不足以判罪。
+                boundary_not_turn = (
+                    len(lines) > boundary and not adapter.is_user_message(lines[boundary])
+                )
+
+                # 坏行按"落在前缀内 / 追加区"分开处置（坏行不是"跳过就算"）。
+                # ⚠️ 坐标必须用**条目序号**（`bad_items`），不能用文件行号：`at_seq` / `boundary`
+                #    都是条目尺度，而文件行号把空行也算进去；混比会看错位置（第二轮审查给了反例：
+                #    文件第 3 行是坏行、但它只是第 2 个条目 ⇒ "3 <= 2" 为假，坏行被漏判）。
+                #    报给用户时仍用**文件行号**（能直接定位到编辑器里那一行）。
+                bad_prefix_files = [f for bi, f in zip(bad_items, bad_files) if bi <= boundary]
+                bad_tail_files = [f for bi, f in zip(bad_items, bad_files) if bi > boundary]
+                bad_marks = [f"L{f}（无法解析）" for f in bad_prefix_files]
+
+                hard = list(prefix_hits) + list(structural) + bad_marks
+                ok = not hard
+                reviewable = appended_hits if ok else []
+                fp_note = {
+                    # 文案只承诺"前 boundary 行"——不能写成"这条分支的边界可信"：指纹对**追加区
+                    # 一无所知**，那样说是假的安心（独立审查点名的过度承诺）。另外这里刻意不用
+                    # markdown 强调符：本串直接打印到终端，`**` 只会原样显示成噪音。
+                    "match": f"前缀指纹与 fork 时一致（证据只覆盖前 {boundary} 行；追加区不在其内）",
+                    "drift": f"⚠️ 前缀指纹与 fork 时不符：前 {boundary} 行已被改动",
+                    "unreadable": "前缀指纹无法读取（本次跳过比对）",
+                    "skipped": "谱系快照点不可信，未能比对指纹",
+                    "absent": "谱系未记录前缀指纹（旧记录）⇒ 无法证实前缀，建议重打该分支",
+                }[fp_verdict]
                 if ok:
-                    notes = [f"判定前缀 L{boundary}"]
+                    notes = [f"判定前缀 L{boundary}", fp_note]
                     if len(lines) > boundary:
                         note = f"fork 后追加 {len(lines) - boundary} 行不计入"
-                        if tail_hits:
-                            if tail_is_new_turn:
-                                note += (f"（其中 {len(tail_hits)} 处源 id 引用落在工具 I/O 字段，"
-                                         f"属对话内容）")
-                            else:
-                                note += "（**未开启新回合，已按从严处理**）"
+                        if reviewable:
+                            tool_io = [p for p in reviewable if _is_tool_io_path(p)]
+                            note += (f"；其中 {len(reviewable)} 处源 id 引用需复核"
+                                     f"（工具 I/O 或思维链 {len(tool_io)} 处、正文 "
+                                     f"{len(reviewable) - len(tool_io)} 处；记录血缘一类写法属正常）")
+                            if boundary_not_turn:
+                                note += "；注意：紧接边界的不是新回合，建议多看一眼"
+                        if bad_tail_files:
+                            note += (f"；追加区另有 {len(bad_tail_files)} 行无法解析"
+                                     f"（第 {bad_tail_files[:3]} 行——可能是产品写入过程中的半行）")
                         notes.append(note)
                     notes.append("全文件 sessionId/session_id 零残留")
                     detail = f"源 id {parent_id[:8]} 零残留（" + "；".join(notes) + "）"
                 else:
                     if structural:
                         why = "会话关联字段（sessionId/session_id）结构性残留 = 真污染"
-                    elif tail_hard:
-                        why = "快照点之后的非工具字段残留（at_seq 可能不可信）"
+                    elif prefix_hits:
+                        why = "前缀（fork 复制区）残留 = rewrite 回归或产物被改动"
                     else:
-                        why = "前缀残留 = rewrite 回归"
-                    detail = f"源 id 残留 {len(bad)} 处：{bad[:3]}（{why}）"
-                items.append(VerifyItem(f"分支产物校验 {sid[:8]}", "L2", ok, detail))
+                        why = "前缀内有无法解析的行 ⇒ 产物被损坏或被改动"
+                    if bad_prefix_files and not (prefix_hits or structural):
+                        detail = (f"前缀内有 {len(bad_prefix_files)} 行无法解析"
+                                  f"（第 {bad_prefix_files[:3]} 行）⇒ {why}")
+                    else:
+                        detail = f"源 id 残留 {len(hard)} 处：{hard[:3]}（{why}）"
+                        if bad_prefix_files:
+                            detail += (f"；另：前缀内有 {len(bad_prefix_files)} 行无法解析"
+                                       f"（第 {bad_prefix_files[:3]} 行）")
+                items.append(VerifyItem(f"分支产物校验 {sid[:8]}", "L2", ok, detail,
+                                        review=bool(reviewable) or fp_verdict == "drift"))
             else:
                 try:
                     cut, total = locate_last_reply(adapter, lines)
@@ -571,14 +789,35 @@ def verify_environment(adapter: TranscriptionAdapter) -> list[VerifyItem]:
                 detail = f"{n} 处替换，截断点 L{cut}/{total}"
                 if residue:
                     detail += f"，残留 {len(residue)} 处：{residue[:3]}"
-                items.append(VerifyItem(f"真实数据替换 {sid[:8]}", "L2", ok, detail))
+                # 源会话的坏行不算我们的缺陷（那是产品侧的数据），但**必须说出来**：
+                # 一是"少看了一部分内容"不能当全绿，二是坏行落在复制范围内时打分支会被拒。
+                if bad_files:
+                    # 范围判定用条目序号、展示用文件行号（见 parse_jsonl 的坐标说明）
+                    in_cut_lines = [f for bi, f in zip(bad_items, bad_files) if bi <= cut]
+                    detail += (f"；⚠️ 该会话有 {len(bad_files)} 行无法解析（第 {bad_files[:3]} 行）已跳过"
+                               + (f"，其中 {len(in_cut_lines)} 行落在复制范围内 ⇒ 打分支会被拒绝"
+                                  f"（请先修好或换一个截断点）" if in_cut_lines else "，均在复制范围之外"))
+                items.append(VerifyItem(f"真实数据替换 {sid[:8]}", "L2", ok, detail,
+                                        review=bool(bad_files) and ok))
         # 汇总项 ok = 本轮所有真实数据检查项都通过（不硬编码绿，2026-09-03 复核）
+        # 口径（v2.4.15）：只有"失败"才让汇总变红；"需复核"是提示，**不阻塞**——
+        # 理由见分支判定处的说明（常驻红 = 闸门失效，比一条可解释的提示更糟）。
         data_items = [it for it in items if it.name.startswith(("真实数据替换", "分支产物校验", "截断定位"))]
-        all_ok = bool(data_items) and all(it.ok for it in data_items)
+        n_fail = sum(1 for it in data_items if not it.ok)
+        n_review = sum(1 for it in data_items if it.ok and getattr(it, "review", False))
+        all_ok = bool(data_items) and n_fail == 0
+        if n_fail:
+            tail = f"（{n_fail} 项失败——见上）"
+        elif n_review:
+            tail = f"（无失败项；{n_review} 项需人工复核，见上 ⚠️）"
+        else:
+            tail = "（全部通过）"
         items.append(VerifyItem(
             "体检覆盖", "L2", all_ok,
-            f"抽查最新 {n_src} 个源会话 + {n_br} 个分支"
-            + ("（全部通过）" if all_ok else f"（{sum(1 for it in data_items if not it.ok)} 项失败——见上）"),
+            f"抽查最新 {n_src} 个源会话 + {n_br} 个分支" + tail,
+            # 汇总项**不**自己带 review 标记：否则上面那 N 项会被算成 N+1 项
+            # （本轮真机实测发现的计数瑕疵）。需复核的清单在它上面的各分项里。
+            review=False,
         ))
 
     # 3. 谱系索引
@@ -642,9 +881,14 @@ def create_fork(
         # 有些产品无索引（纯文件），用最小 meta
         src_meta = SessionMeta(id=src_id, cwd=slug or "")
 
-    lines = adapter.read_lines(transcript)
+    lines, src_bad_files, src_bad_items = _read_lines_checked(adapter, transcript)
     if not lines:
         raise ForkError(f"Transcript is empty or unreadable: {transcript}")
+    if src_bad_files:
+        # 源会话里的坏行会被**跳过**（不复制进产物）——这是有意的，但绝不能静默：
+        # 复制出来的东西会少一段，用户有权知道。（防御性：本机真库实测 0 例坏行。）
+        notify(f"源会话有 {len(src_bad_files)} 行无法解析（第 {src_bad_files[:5]} 行），"
+               f"已跳过、不会复制进分支", quietable=False)
 
     if match_text or line_no or request_id:
         # locate_split_point 找不到时自行 ForkError（带 Hint），此处不会返回 None
@@ -725,9 +969,15 @@ def create_fork(
         adapter.finalize_branch(tmp, dst)
         # 读锁不再自动加（v1.4.0 起提示用户自行设为只读），此处只负责落位
 
+        # ── 前缀指纹（v2.4.15）：从**已落位**的产物取，随后跟 `at_seq` 一起登记 ──
+        # 取不到（None）不阻断 fork：指纹是"加分证据"，用于让体检能核对边界，
+        # 而体检对"无指纹"有明确退化路径（提示复核，不误判）。
+        prefix_fp = _prefix_fingerprint(adapter, dst, cut)
+
         # ── 登记（db + lineage；内部顺序见 adapter，外层只做补救）──
         try:
-            adapter.register_branch(src_meta, new_id, dst, name, parent_id=src_meta.id, at_seq=cut)
+            _register_branch_with_fp(adapter, src_meta, new_id, dst, name,
+                                     parent_id=src_meta.id, at_seq=cut, prefix_fp=prefix_fp)
         except Exception as e:
             # register 失败（其内部已尽量同序，db/lineage 侧用 unregister 兜底清理）；
             # 文件已落位——回滚文件让失败态退回孤儿文件（无害）；删不掉必须显式报错

@@ -7,7 +7,7 @@ display_name_en: Session Fork
 description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。当你说"打分支""会话分叉""把这个任务复制成新分支""以某条回复为界新建对话""并行试几条路""把对话截断复制"，或提到 fork this session / branch this task 时使用。底层为 fork-core 通用引擎，跨产品可用。
 description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。注意：分叉复制的是会话上下文，工作区产物不会跟着回退——除非产物自身有版本记录（如 git），否则只有当前最终态。
 description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running. Note that a fork copies the session context only; workspace artifacts are not rolled back — unless they are version-controlled (e.g. git), only their final state exists.
-version: 2.4.14
+version: 2.4.15
 author: OfferKuai (Offer快) Team
 license: MIT
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
@@ -309,7 +309,17 @@ python3 "${SK}/scripts/create_branch.py" --session current --adapter openclaw   
   `Source   : <会话id>  「<会话名>」`
   **先确认这个源会话就是你（和用户）所在的那个对话**。父 id 对不上时肉眼看不出来，**名字**能一眼看出来。不一致 → **立即停手**，把"你在的对话 / 实际被当成源会话的对话"两个名字摆给用户，问清要哪条；**不要继续，更不要交付一个"来历正确但对话不对"的分支**（2026-09-15 事故正是如此：用户在 A 对话里打分支，产物是 B 对话的分支）；
 - **先 `--dry-run` 确认截断点，再正式执行**（推荐，防打错位置）；
-- **`python3 "${SK}/scripts/create_branch.py" --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑——环境异常会 FAIL 拦截（Claude adapter 无真实 CLI 会话时属预期 L1）；
+- **`python3 "${SK}/scripts/create_branch.py" --verify` 真库体检**：发布/环境变化后必跑；打分支前建议跑。输出分三档，**别误读**：
+  - **`❌ 失败` = 要修**（前缀内残留 / 结构性 `sessionId` 残留等）：以非 0 退出，会拦住发布；
+  - **`⚠️ 需复核` = 不用修，看一眼即可**：典型情形是**你在分支里记录了血缘**（"我的父会话是谁"），
+    于是 fork **之后**追加的内容里出现了父会话 id。它**不会**让体检失败、不影响退出码。
+    想彻底消解就**重打一次该分支**——新分支会带上"前缀指纹"（`prefix_fp`），此后体检能证明
+    "边界之内仍是 fork 原样产物"，不再提示。两处边界要知道：
+    ① **追加区必须先开一轮新 user 消息**（你接着说下一句）——若紧接快照点的**不是** user 消息，
+    这段按"疑似前缀残留"**从严判失败**（宁可在这一处误报，也不让真污染借"追加区"溜过）；
+    ② 指纹证据**只覆盖快照点之前那 N 行**，对追加区不作任何担保，别把它读成"整条分支都没问题"；
+  - **`✅ 通过`**。
+  （Claude adapter 无真实 CLI 会话时属预期 L1）
 - 脚本自动完成备份 → 截取 → 会话 id 替换 → 注册 → 校验，无需手工介入。
 
 ### Step 4 — 验证与汇报
@@ -382,7 +392,8 @@ python3 "${SK}/scripts/create_branch.py" --session current --adapter openclaw   
 **fork 产物的正文里读不出"它从谁来"**——因为本引擎做的是**递归 id 替换**：被复制正文里出现的**源会话 id**，会被一并改写成**分支自己的 id**（覆盖全部可读字段，仅 `rawContent` / `rawResponse` 等原始内容黑名单不碰）。
 
 ⇒ **拿转录去证"我来自谁"必然得出错误结论**（父 id 在产物里已经被改写掉了）。
-**唯一可信的出处是谱系索引**：本产品目录下的谱系文件（WorkBuddy 为 `~/.workbuddy/fork.lineage.json`）里的 `parent_id` 与 `at_seq` —— `--list --tree` 读的就是它。
+**唯一可信的出处是谱系索引**：本产品目录下的谱系文件（WorkBuddy 为 `~/.workbuddy/fork.lineage.json`）里的 `parent_id`、`at_seq`（快照点）与 `prefix_fp`（该前缀的指纹，v2.4.15 起）—— `--list --tree` 读的是它。
+（`at_seq` 与 `prefix_fp` 还让体检能**核对**"边界是否可信"：前 `at_seq` 行的指纹与 fork 时一致 ⇒ 那段确是复制出来的原样产物，之后的差异只可能来自 fork 之后。）
 
 > 实测（一次真实分叉）：分支自己的文件里，标记指向**它自己** 52 次；而父会话文件里标记指向父的 42 次、指向该分支的 **0** 次。
 > 两边都只剩"自己"⇒ 光看转录会得出"它来自自己"这种荒谬结论。

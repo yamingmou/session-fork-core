@@ -18,7 +18,7 @@ import os
 import sqlite3
 
 from .models import SessionMeta, VerifyItem
-from .adapter_base import TranscriptionAdapter, dumps_safe, notify
+from .adapter_base import TranscriptionAdapter, dumps_safe, notify, read_jsonl_file
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".workbuddy", "projects")
@@ -218,7 +218,9 @@ class WorkBuddyAdapter(TranscriptionAdapter):
     # C. 读写
     # ------------------------------------------------------------------
     def read_lines(self, path: str) -> list[dict]:
-        return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+        # 坏行跳过（不抛）：读取方不该因为一行坏掉就整轮崩；
+        # 需要坏行行号时走 read_lines_checked（见 adapter_base.parse_jsonl 的说明）。
+        return read_jsonl_file(path).objs
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
         notify(f"写入分支文件 / writing branch file: {path}", quietable=False)
@@ -300,12 +302,12 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             extra={k: row[k] for k in row.keys() if k not in ("id", "custom_title", "status", "created_at", "cwd")},
         )
 
-    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None) -> None:
+    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None, prefix_fp: str | None = None) -> None:
         # 顺序调整（2026-09-04 事务化改造，原则：失败态落在无害侧）：
         # 先写旁路谱系、后写 db——db 失败时 db 无副作用（无悬空行），
         # lineage 孤儿条目由调用方 unregister 兜底清除；若 db 先写、lineage 后写，
         # lineage 失败会留下"db 行指向已回滚文件"的悬空记录（侧边栏崩）。
-        self._lineage_add(new_id, name, parent_id or src.id, at_seq, src.cwd or "")
+        self._lineage_add(new_id, name, parent_id or src.id, at_seq, src.cwd or "", prefix_fp)
         db = self._connect()
         try:
             cur = db.cursor()
@@ -373,7 +375,8 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             f.write(dumps_safe(data, indent=2))
         os.replace(tmp, LINEAGE_PATH)
 
-    def _lineage_add(self, new_id: str, name: str, parent_id: str, at_seq: int, cwd: str) -> None:
+    def _lineage_add(self, new_id: str, name: str, parent_id: str, at_seq: int, cwd: str,
+                     prefix_fp: str | None = None) -> None:
         lock = None
         try:
             import fcntl
@@ -390,6 +393,8 @@ class WorkBuddyAdapter(TranscriptionAdapter):
                     "name": name,
                     "parent_id": parent_id,
                     "at_seq": at_seq,
+                    # 前缀指纹（v2.4.15）：体检据此核对"前 at_seq 行是否仍是 fork 当时的产物"
+                    "prefix_fp": prefix_fp,
                     "cwd": cwd,
                     "created_at": int(datetime.datetime.now().timestamp() * 1000),
                 }

@@ -60,7 +60,7 @@ import sqlite3
 import time
 import uuid
 
-from .adapter_base import dumps_safe
+from .adapter_base import dumps_safe, parse_jsonl
 from .adapter_openclaw import OpenClawJsonlAdapter, BRANCH_KEY_PREFIX
 from .models import SessionMeta, VerifyItem
 
@@ -236,7 +236,38 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
             ).fetchall()
         finally:
             con.close()
-        return [json.loads(r[0]) for r in rows]
+        # 逐个容错解析：DB 里也可能有坏行（半写/上游写坏），一个坏行不该让整轮体检崩
+        # （防御性：本机真库实测 0 例，见 adapter_base.parse_jsonl 的证据等级说明）。
+        # 坏行的**行号按"第几条事件"计**（seq 升序的序号）——与 at_seq 同一口径。
+        out = []
+        for r in rows:
+            out.extend(parse_jsonl(r[0] if isinstance(r[0], str) else str(r[0])).objs)
+        return out
+
+    def read_lines_checked(self, ref: str):
+        """坏行按"第几条事件"报出（本后端不走文件，故不能依赖基类的文件默认实现）。"""
+        from .adapter_base import ParseResult
+
+        if ref in self._pending:
+            return ParseResult(objs=self._pending[ref], bad_lines=[])
+        db, sid = parse_ref(ref)
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT event_json FROM transcript_events WHERE session_id=? ORDER BY seq",
+                (sid,),
+            ).fetchall()
+        finally:
+            con.close()
+        objs, bad = [], []
+        for i, r in enumerate(rows, 1):
+            res = parse_jsonl(r[0] if isinstance(r[0], str) else str(r[0]))
+            objs.extend(res.objs)
+            if res.bad_lines:
+                bad.append(i)
+        # bad_items 与 bad_lines 同为「第几条事件」：本后端没有"文件行号"这一层，
+        # 显式给出以免引擎回退到 bad_files 而让尺度契约含糊（第三轮审查指出）。
+        return ParseResult(objs=objs, bad_lines=bad, bad_items=list(bad))
 
     def read_raw(self, ref: str) -> str:
         """读出「每行一条 JSON」的等价文本，**仅供引擎的行数 / 解析 / 残留校验复用**。
@@ -381,10 +412,12 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
     # ------------------------------------------------------------------
     # D. 注册（OpenClaw 无 sessions.json；session_nodes 已在 finalize 写入）
     # ------------------------------------------------------------------
-    def register_branch(self, src, new_id, dst_path, name, parent_id=None, at_seq=None) -> None:
+    def register_branch(self, src, new_id, dst_path, name, parent_id=None, at_seq=None,
+                        prefix_fp=None) -> None:
         # 产品索引（session_nodes）随 finalize 落地；这里只写旁路谱系索引
         super(OpenClawJsonlAdapter, self).register_branch(
-            src, new_id, dst_path, name, parent_id=parent_id, at_seq=at_seq)
+            src, new_id, dst_path, name, parent_id=parent_id, at_seq=at_seq,
+            prefix_fp=prefix_fp)
 
     def unregister_branch(self, new_id: str) -> None:
         super(OpenClawJsonlAdapter, self).unregister_branch(new_id)

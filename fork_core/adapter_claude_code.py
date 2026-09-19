@@ -19,7 +19,7 @@ import json
 import os
 
 from .models import SessionMeta, VerifyItem
-from .adapter_base import TranscriptionAdapter, dumps_safe, notify
+from .adapter_base import TranscriptionAdapter, dumps_safe, notify, read_jsonl_file
 
 HOME = os.path.expanduser("~")
 #: 根目录支持隔离：`CLAUDE_CONFIG_DIR` 是 Claude Code 官方认可的配置根覆盖变量
@@ -112,7 +112,9 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
     # C. 读写
     # ------------------------------------------------------------------
     def read_lines(self, path: str) -> list[dict]:
-        return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+        # 坏行跳过（不抛）：读取方不该因为一行坏掉就整轮崩；
+        # 需要坏行行号时走 read_lines_checked（见 adapter_base.parse_jsonl 的说明）。
+        return read_jsonl_file(path).objs
 
     def write_branch(self, path: str, lines: list[dict]) -> None:
         with open(path, "w", encoding="utf-8") as f:
@@ -198,7 +200,7 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
         with open(BRANCH_INDEX, "w", encoding="utf-8") as f:
             f.write(dumps_safe(data, indent=2))
 
-    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None) -> None:
+    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None, prefix_fp: str | None = None) -> None:
         data = self._read_index()
         data["branches"].append(
             {
@@ -208,6 +210,8 @@ class ClaudeCodeAdapter(TranscriptionAdapter):
                 "source_id": src.id,
                 "path": dst_path,
                 "at_seq": at_seq,
+                # 前缀指纹（v2.4.15）：体检据此核对"前 at_seq 行是否仍是 fork 当时的产物"
+                "prefix_fp": prefix_fp,
                 "created_at": src.created_at,
             }
         )

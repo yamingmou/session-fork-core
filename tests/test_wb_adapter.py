@@ -269,35 +269,82 @@ print(f"✓ 边界可信度兜底: at_seq 不可信 → 退回宽边界抓到残
       f"快照点后的 sessionId 结构性残留 → 不依赖边界硬拦")
 
 # ============================================================
-# 11d. 反例回归（第二轮复核）：at_seq 偏小、边界跳过的区域里
-#      残留落在**非工具 I/O 字段**（消息正文 content[].text）→ 必须仍判 Fail。
-#      只对工具/函数 I/O 字段宽容（那里出现源 id 是合法对话内容）。
+# 11d. v2.4.15 判据变更：边界之外的源 id 引用 → **需复核**，不再判失败
+#
+#      这条**替换**了原先的断言（原文：「边界跳过的正文残留必须被抓到（反例场景）」）。
+#      为什么改（2026-09-19 结论，不是为了让测试变绿）：
+#        · 原判据要拦的是"at_seq 被记小 ⇒ 被跳过的区域其实还是复制内容"。但它在字节上
+#          **无法与"在分支里记录血缘"区分**——两者都是"边界之后、正文里出现源 id"。
+#          真机取证：两处常驻红的实际内容是"读谱系文件的输出"与"身份登记表 + 自报正文"，
+#          主题全是"我从哪来"（而记录血缘本就是分支的常见用法）。
+#        · 旧判据的实际效果 = 每正常用一次分支就常驻一条红 ⇒ 闸门变成"狼来了"，
+#          真问题被淹没（而 --verify 的全部价值就是发布前拦截）。
+#        · "at_seq 记小"在当前代码里发生不了：create 期 `verify_branch` 硬断言
+#          "产物行数 == cut"，不等即拒绝落位（见 engine.create_fork 的 VERIFY 段）。
+#      仍然硬拦的形态由本用例下半段的负向控制逐条验证（前缀内残留 / 结构性残留）。
 # ============================================================
 _clean = _load_lines(r.dst_path)[:r.cut]  # 回到"刚 fork 完"的干净前缀
-with open(r.dst_path, "w", encoding="utf-8") as f:
-    for _o in _clean:
-        f.write(json.dumps(_o, ensure_ascii=False) + "\n")
-    # ① 开启新回合的 user 消息 → 让"工具 I/O 宽容"确实生效（检验更严苛）
-    f.write(json.dumps({
-        "type": "message", "role": "user", "sessionId": r.new_id,
-        "content": [{"type": "input_text", "text": "继续"}],
-    }, ensure_ascii=False) + "\n")
-    # ② 正文里提到源会话 id（非工具字段 → 即便宽容生效也必须判污染）
-    f.write(json.dumps({
-        "type": "message", "role": "assistant", "sessionId": r.new_id,
-        "content": [{"type": "output_text", "text": f"正文提到 {src_id} 这个会话"}],
-    }, ensure_ascii=False) + "\n")
-    # ③ 一条干净的 assistant，保证文件仍以完整回复收尾
-    f.write(json.dumps({
-        "type": "message", "role": "assistant", "sessionId": r.new_id,
-        "content": [{"type": "output_text", "text": "收尾"}],
-    }, ensure_ascii=False) + "\n")
 
-_set_at_seq(r.cut)  # 边界正好落在干净前缀末尾 → 污染行被当成"追加内容"跳过
+
+def _rewrite_branch(prefix, extra):
+    """用给定前缀 + 追加行重写分支文件。
+
+    注：这里用普通 json.dumps 逐行还原——adapter 的 dumps_safe 默认就是
+    `json.dumps(o, ensure_ascii=False)`（仅当对象含孤立代理才降级），故字节可完全复现，
+    前缀指纹才会判"一致"。若将来 dumps_safe 改了序列化形态，本用例会先红（这是好事）。
+    """
+    with open(r.dst_path, "w", encoding="utf-8") as f:
+        for _o in list(prefix) + list(extra):
+            f.write(json.dumps(_o, ensure_ascii=False) + "\n")
+
+
+_poison = {
+    "type": "message", "role": "assistant", "sessionId": r.new_id,
+    "content": [{"type": "output_text", "text": f"正文提到 {src_id} 这个会话"}],
+}
+_rewrite_branch(_clean, [
+    {"type": "message", "role": "user", "sessionId": r.new_id,
+     "content": [{"type": "input_text", "text": "继续"}]},
+    _poison,
+    {"type": "message", "role": "assistant", "sessionId": r.new_id,
+     "content": [{"type": "output_text", "text": "收尾"}]},
+])
+
+# ── ① 污染在**边界之外** ⇒ 需复核（不判失败），且必须在输出里显式可见 ──
+_set_at_seq(r.cut)  # 边界正好落在干净前缀末尾 → 污染行属"fork 之后追加"
 _it = _item()
-assert not _it.ok, f"边界跳过的正文残留必须被抓到（反例场景）：{_it.detail}"
-assert "非工具字段" in _it.detail, f"应指出是非工具字段残留：{_it.detail}"
-print("✓ 反例回归: at_seq 跳过正文残留 → 仍判 Fail（非工具 I/O 字段从严）")
+assert _it.ok, f"边界之外的正文引用不该判失败（v2.4.15 判据）：{_it.detail}"
+assert getattr(_it, "review", False), f"应标记为需复核：{_it.detail}"
+assert "需复核" in _it.detail, f"detail 应写清需复核：{_it.detail}"
+assert "前缀指纹与 fork 时一致" in _it.detail, f"应给出边界证据（指纹）：{_it.detail}"
+
+# ── ② 负向控制：同一处污染落在**边界之内** ⇒ 仍硬失败（前缀是引擎的产物）──
+_set_at_seq(r.cut + 2)  # 边界扩到污染行末尾（该行是完整 assistant 回复）
+_it = _item()
+assert not _it.ok, f"前缀内的源 id 残留必须仍判失败：{_it.detail}"
+assert "前缀" in _it.detail, f"应指向前缀残留：{_it.detail}"
+
+# ── ③ 负向控制：前缀被改动（指纹漂移）⇒ 据实报出来，但不判失败 ──
+_set_at_seq(r.cut)
+_drift = json.loads(json.dumps(_clean, ensure_ascii=False))  # 深拷贝，别污染 _clean
+for _o in _drift:                                            # 改前缀中段某行的正文（不动任何 id）
+    _c = _o.get("content")
+    if isinstance(_c, list) and _c and isinstance(_c[0], dict) and "text" in _c[0]:
+        _c[0]["text"] = str(_c[0]["text"]) + "（事后改动）"
+        break
+_rewrite_branch(_drift, [
+    {"type": "message", "role": "user", "sessionId": r.new_id,
+     "content": [{"type": "input_text", "text": "继续"}]},
+    {"type": "message", "role": "assistant", "sessionId": r.new_id,
+     "content": [{"type": "output_text", "text": "收尾"}]},
+])
+_it = _item()
+assert _it.ok, f"指纹漂移不该判失败（前缀内无源 id 残留）：{_it.detail}"
+assert getattr(_it, "review", False), f"指纹漂移应标记需复核：{_it.detail}"
+assert "指纹与 fork 时不符" in _it.detail, f"应报出前缀被改动：{_it.detail}"
+
+print("✓ 边界判据（v2.4.15）：边界外引用 → 需复核（含指纹漂移）；"
+      "前缀内残留 → 仍硬失败（负向控制 2 条）")
 
 import shutil
 shutil.rmtree(tmpdir)
