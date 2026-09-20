@@ -23,7 +23,7 @@ tmpdir = tempfile.mkdtemp(prefix="hermes-test-")
 os.environ["HERMES_HOME"] = tmpdir
 
 from fork_core.adapters import get_adapter  # noqa: E402
-from fork_core.engine import ForkError, create_fork, verify_branch  # noqa: E402
+from fork_core.engine import create_fork, verify_branch  # noqa: E402
 
 DB = os.path.join(tmpdir, "state.db")
 BK = os.path.join(tmpdir, "backups")   # 备份也留在隔离根内，别写进 ~/.workbuddy/backups

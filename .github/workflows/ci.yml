@@ -89,3 +89,6 @@ jobs:
             exit 1
           fi
           echo "✅ SKILL.md 与源一致"
+
+      - name: --pack 打包自检（堵 Windows cwd=/tmp 盲区）
+        run: python scripts/build_skill.py --pack

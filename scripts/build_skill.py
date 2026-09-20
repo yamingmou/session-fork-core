@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -181,7 +182,7 @@ def pack(wb_text: str, fork_text: str) -> int:
     print("\n  打包后真跑自检（在无关 cwd 下执行，验证自定位）：")
     for label, dirname in (("WB 包", "wb"), ("fork 包", "clawhub")):
         entry = REPO / "dist" / dirname / "session-fork" / "scripts" / "create_branch.py"
-        r = subprocess.run([py, str(entry), "--version"], capture_output=True, text=True, cwd="/tmp")
+        r = subprocess.run([py, str(entry), "--version"], capture_output=True, text=True, cwd=tempfile.gettempdir())
         ver = r.stdout.strip() or r.stderr.strip()
         if r.returncode != 0:
             print(f"    ✗ {label} 入口跑不起来：{ver}")
@@ -189,7 +190,7 @@ def pack(wb_text: str, fork_text: str) -> int:
         bad = []
         for a in ("workbuddy", "claude-code", "pi", "openclaw", "codex", "hermes"):
             rr = subprocess.run([py, str(entry), "--adapter", a, "--help"],
-                                capture_output=True, text=True, cwd="/tmp")
+                                capture_output=True, text=True, cwd=tempfile.gettempdir())
             if rr.returncode != 0:
                 bad.append(a)
         if bad:

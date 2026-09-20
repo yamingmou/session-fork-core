@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sqlite3
 import time
 import uuid

@@ -7,7 +7,7 @@ display_name_en: Session Fork
 description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。当你说"打分支""会话分叉""把这个任务复制成新分支""以某条回复为界新建对话""并行试几条路""把对话截断复制"，或提到 fork this session / branch this task 时使用。底层为 fork-core 通用引擎，跨产品可用。
 description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。注意：分叉复制的是会话上下文，工作区产物不会跟着回退——除非产物自身有版本记录（如 git），否则只有当前最终态。
 description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running. Note that a fork copies the session context only; workspace artifacts are not rolled back — unless they are version-controlled (e.g. git), only their final state exists.
-version: 2.4.18
+version: 2.4.19
 author: OfferKuai (Offer快) Team
 license: MIT
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep

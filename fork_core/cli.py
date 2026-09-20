@@ -26,8 +26,7 @@ if __package__ in (None, ""):  # 被当作脚本直接执行（而非 -m / 被�
 from . import available, create_fork, get_adapter, list_forks
 from .adapter_base import harden_output
 from .engine import ForkError, ForkRegisterError, ForkRollbackError, ForkVerifyError
-
-VERSION = "2.4.18"
+from ._version import VERSION  # noqa: F401 — 单一来源
 
 
 def print_tree(metas) -> None:
@@ -44,7 +43,6 @@ def print_tree(metas) -> None:
             children.setdefault(p, []).append(m)
         else:
             roots.append(m)
-    seen = set()
 
     def render(m, prefix="", is_last=True):
         branch_char = "└── " if is_last else "├── "
@@ -240,7 +238,7 @@ def run_verify(adapter) -> None:
 
 def run_fix(fix_session_id: str) -> None:
     """修复被主进程追加了多余消息的分支（WorkBuddy 专用）。"""
-    from .engine import DEFAULT_BACKUPS_DIR, _load_lines, locate_last_reply
+    from .engine import _load_lines, locate_last_reply
 
     wb = get_adapter("workbuddy")
     fix_path, _ = wb.find_transcript(fix_session_id)
@@ -258,7 +256,7 @@ def run_fix(fix_session_id: str) -> None:
         return
 
     ts = time.strftime("%Y%m%d-%H%M%S")
-    backup_dir = os.path.join(DEFAULT_BACKUPS_DIR, ts)
+    backup_dir = os.path.join(wb.backups_dir(), ts)
     os.makedirs(backup_dir, exist_ok=True)
     shutil.copy2(fix_path, os.path.join(backup_dir, os.path.basename(fix_path)))
     print(f"Backup   : {backup_dir}")

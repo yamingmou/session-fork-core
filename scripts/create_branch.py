@@ -23,7 +23,7 @@ import sys
 # 把技能根目录（本文件的上一级）加入模块搜索路径，以便 import 根目录下的 fork_core 包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fork_core.cli import VERSION, main  # noqa: E402
+from fork_core.cli import main  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main())

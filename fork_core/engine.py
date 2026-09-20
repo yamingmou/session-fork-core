@@ -251,15 +251,6 @@ def locate_split_point(adapter, lines: list[dict], match_text=None, line_no=None
     return cand, n
 
 
-def backup_source(path: str, backups_dir: str = DEFAULT_BACKUPS_DIR) -> str:
-    """备份源 transcript（仅源文件，不复制数据库）。返回备份目录。"""
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    backup_dir = os.path.join(backups_dir, ts)
-    os.makedirs(backup_dir, exist_ok=True)
-    shutil.copy2(path, os.path.join(backup_dir, os.path.basename(path)))
-    return backup_dir
-
-
 def verify_branch(adapter, dst_path: str, new_id: str, cut: int, src_id: str) -> list[str]:
     """验证分支文件完整性。返回错误列表（空 = 通过）。
 
@@ -845,7 +836,7 @@ def create_fork(
     request_id: str = None,
     name: str = None,
     dry_run: bool = False,
-    backups_dir: str = DEFAULT_BACKUPS_DIR,
+    backups_dir: str = None,
     whole: bool = False,
 ) -> ForkResult:
     """核心入口：创建分支。
@@ -856,7 +847,11 @@ def create_fork(
     `whole=True`：默认模式下强制"整份复制"语义（含当前未完成回合的叙述）。
     只在"会话内打分支"时有区别——那种场景默认要切掉本轮（含"打分支"这条指令本身），
     而 `--whole` 是它的显式逃生口（v2.4.9）。
+
+    `backups_dir=None` 时取 adapter.backups_dir()（读 FORK_BACKUP_DIR 环境变量）。
     """
+    if backups_dir is None:
+        backups_dir = adapter.backups_dir()
     # request-id 模式：用户复制 UI "请求 ID" 打分支，可能不知道源会话（跨 workspace）。
     # 若 --session 是 current（未显式指定源），先全盘反查该 request-id 属于哪个会话，
     # 自动定位源——这样用户只需贴复制的 ID 就能打分支，无需理解 session 概念。

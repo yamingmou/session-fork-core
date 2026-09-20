@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import fork_core.adapter_workbuddy as wb_mod
 from fork_core.adapter_workbuddy import WorkBuddyAdapter
-from fork_core.models import SessionMeta
 
 # --- 临时 db + 临时 projects ---
 tmpdir = tempfile.mkdtemp(prefix="wb-test-")
@@ -548,7 +547,7 @@ print("\n✅ WorkBuddy adapter 全部测试通过（含谱系/再 fork/谱系树
 # 13. dry_run 不崩溃（回归：rewrite 移入 if 后 ForkResult 引用局部名）v2.4.3
 # ============================================================
 _dr_tmp = _tf.mkdtemp(prefix="wb-dry-")
-import importlib, fork_core.adapter_workbuddy as _wb3
+import fork_core.adapter_workbuddy as _wb3
 _wb3.DB_PATH = os.path.join(_dr_tmp, "workbuddy.db")
 _wb3.PROJECTS_DIR = os.path.join(_dr_tmp, "projects")
 _wb3.LINEAGE_PATH = os.path.join(_dr_tmp, "fork.lineage.json")

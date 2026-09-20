@@ -14,6 +14,7 @@
 from .adapters import available, get_adapter
 from .engine import create_fork, list_forks
 from .models import ForkResult, SessionMeta
+from ._version import __version__, VERSION  # noqa: F401 — 单一来源
 
 __all__ = [
     "create_fork",
@@ -23,5 +24,5 @@ __all__ = [
     "ForkResult",
     "SessionMeta",
     "cli",
+    "VERSION",
 ]
-__version__ = "0.1.0"
