@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tempfile
@@ -182,7 +183,18 @@ def pack(wb_text: str, fork_text: str) -> int:
     print("\n  打包后真跑自检（在无关 cwd 下执行，验证自定位）：")
     for label, dirname in (("WB 包", "wb"), ("fork 包", "clawhub")):
         entry = REPO / "dist" / dirname / "session-fork" / "scripts" / "create_branch.py"
-        r = subprocess.run([py, str(entry), "--version"], capture_output=True, text=True, cwd=tempfile.gettempdir())
+        # ⚠️ encoding 必须显式给 UTF-8：子进程的输出已被 harden_output() 固化为 UTF-8，
+        #    而 text=True 不带 encoding 时用本机 locale 解码（中文 Windows = cp936）⇒
+        #    中文 help 文本会解成非法序列、抛 UnicodeDecodeError。errors="replace" 兜底，
+        #    最坏也只是乱码，不会打断打包。（英文 Windows 的 cp1252 几乎能解任何字节，
+        #    所以三平台 CI 抓不到这一格——这正是中文 Windows 特有的那一类。）
+        # PYTHONDONTWRITEBYTECODE：自检是在**包目录里**跑 Python ⇒ 不加这句会当场生成
+        # fork_core/__pycache__（7 个 .pyc，内嵌构建机绝对路径）。而渠道是按目录上传的。
+        # ⚠️ 本机若恰好在环境里设了这个变量，就**复现不出来**——所以不能只靠"我这看着干净"。
+        clean_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        r = subprocess.run([py, str(entry), "--version"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", cwd=tempfile.gettempdir(),
+                           env=clean_env)
         ver = r.stdout.strip() or r.stderr.strip()
         if r.returncode != 0:
             print(f"    ✗ {label} 入口跑不起来：{ver}")
@@ -190,7 +202,9 @@ def pack(wb_text: str, fork_text: str) -> int:
         bad = []
         for a in ("workbuddy", "claude-code", "pi", "openclaw", "codex", "hermes"):
             rr = subprocess.run([py, str(entry), "--adapter", a, "--help"],
-                                capture_output=True, text=True, cwd=tempfile.gettempdir())
+                                capture_output=True, text=True,
+                                encoding="utf-8", errors="replace",
+                                cwd=tempfile.gettempdir(), env=clean_env)
             if rr.returncode != 0:
                 bad.append(a)
         if bad:
@@ -203,6 +217,20 @@ def pack(wb_text: str, fork_text: str) -> int:
     if n == 0:
         print("  ✗ fork 包文档一条 --adapter 都没有——读者会操作错产品的库")
         return 1
+
+    # 归档卫生：两个渠道都是**按目录上传**的，包内不得出现 __pycache__ / *.pyc ——
+    # 它们在"有人在包目录里跑过 Python"时产生（自检、手工试跑都会），
+    # 且 .pyc 里嵌着构建机的绝对路径（如 /Users/<用户名>/…）。
+    # ⚠️ 别只信"我这看着干净"：本机若设了 PYTHONDONTWRITEBYTECODE=1 就生成不出来。
+    for dirname in ("wb", "clawhub"):
+        root = REPO / "dist" / dirname / "session-fork"
+        junk = sorted(p.relative_to(root).as_posix()
+                      for p in root.rglob("*")
+                      if p.name == "__pycache__" or p.suffix == ".pyc")
+        if junk:
+            print(f"  ✗ {dirname} 包内混入字节码缓存（渠道按目录上传，会被原样收走）：{junk[:6]}")
+            print("    ⇒ 清掉后重跑；自检已带 PYTHONDONTWRITEBYTECODE=1，见 _pack_one 说明")
+            return 1
     return 0
 
 

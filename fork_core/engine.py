@@ -14,16 +14,13 @@ import json
 import os
 import re
 import stat
-import shutil
-import time
 import uuid
 
 from .adapter_base import TranscriptionAdapter, notify
 from .models import ForkResult, SessionMeta, VerifyItem
 
-# 备份目录默认 ~/.workbuddy/backups（历史默认值）。CLI 路径实际取 adapter.backups_dir()，
-# 可用环境变量 FORK_BACKUP_DIR 覆盖（见 adapter_base.TranscriptionAdapter.backups_dir）。
-DEFAULT_BACKUPS_DIR = os.path.join(os.path.expanduser("~"), ".workbuddy", "backups")
+# 备份目录没有模块级默认值：由 adapter.backups_dir() 决定
+# （读 FORK_BACKUP_DIR；见 adapter_base.TranscriptionAdapter.backups_dir）。
 
 
 class ForkError(Exception):
