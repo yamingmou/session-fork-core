@@ -8,14 +8,37 @@
     **无需任何"产品盖章"动作** —— 这与 OpenClaw 相反（OpenClaw 必须跑 `doctor --fix`
     让产品把 `entry_valid` 置 1）。故本适配器**不 import 产品代码**、**不要求用户跑修复命令**。
 
+## v0.21.6（schema 31）兼容 —— 2026-10-09 实测新增
+
+上游把 `schema_version` 从 **30 升到 31**，并新增列：`sessions` 58→**62**（`created_source` /
+`compression_overload_streak` / `transport_profile` / `auto_archived`）、
+`messages` 26→**30**（`message_uid` / `absorbed_message_uids` / `tool_call_uids` / `tool_call_uid`）；
+索引：`sessions`+`messages` 两表合计 19→21（新增非唯一的 `idx_messages_session_uid … WHERE active = 1`、
+`idx_sessions_tool_names`）；**全库口径** 24→26。
+触发器：**全库 10→11**，v31 新增 `messages_message_uid_insert`（**是一个 AFTER INSERT 触发器**）。
+FTS：`state_meta.fts_storage_version` 实测 **2 → 3**（`FTS_STORAGE_VERSION = 3`）。
+
+> ⚠️ 口径说明（避免误读）：**触发器按全库统计**、**索引按 `sessions`+`messages` 两表统计** ——
+> 两个口径的数字不同（全库索引 24→26），写在一起容易被当成同一个范围。
+
+**验证方式（不是只看 diff）**：把 2026-09-14 的真库复制一份，
+用 v0.21.6 自己的 `hermes_state.SessionDB` 打开（产品自行跑 30→31 迁移，25 张表、数据完整），
+然后跑本适配器：放行白名单后**写入成功**；再用产品代码读回 —— `list_sessions_rich(include_children=True)`
+**列出该分支**且 `parent_session_id` 指向源会话、消息内容与 `message_uid` 原样复制；
+SQLite 官方 `FTS5 integrity-check` 通过，`messages_fts` 行数 = `messages` 行数（含分支新行）。
+
+**为什么列数变了却不改写入逻辑**：本适配器用 `SELECT * … LIMIT 0` 取**实际列名**再拼
+`INSERT INTO {table} ({cols}) VALUES (…)` ⇒ 新增列随行原样复制，不受列数变化影响。
+（这条"动态取列"是刻意设计，改动它之前请先想清楚新增列的回填语义。）
+
 ## 介质契约
 
-`$HERMES_HOME/state.db`（`journal_mode=wal`，`SCHEMA_VERSION=30`）。一个会话横跨**两张表**：
+`$HERMES_HOME/state.db`（`journal_mode=wal`，`SCHEMA_VERSION` **30 或 31**）。一个会话横跨**两张表**：
 
-| 表 | 列数 | 作用 | 分支侧要写什么 |
+| 表 | 列数（v30 → v31） | 作用 | 分支侧要写什么 |
 |---|---|---|---|
-| `sessions` | 58 | 会话元数据（`id` 主键、`model_config`、`parent_session_id`…） | 复制源行 + 覆写身份/血缘/时间/标题 |
-| `messages` | 26 | 消息本体（`id` 自增主键、`session_id` 外键、`role`、`content`…） | 复制前缀，**排除自增 `id`** |
+| `sessions` | 58 → **62** | 会话元数据（`id` 主键、`model_config`、`parent_session_id`…） | 复制源行 + 覆写身份/血缘/时间/标题 |
+| `messages` | 26 → **30** | 消息本体（`id` 自增主键、`session_id` 外键、`role`、`content`…） | 复制前缀，**排除自增 `id`**；其余列**按实际列名**复制 |
 
 **与其它产品的三处关键差异**（全部实测确定）：
 
@@ -40,8 +63,11 @@
 
 ## 已知边界（如实记录）
 
-- 依赖**未公开的内部表结构**（`SCHEMA_VERSION=30`）。故设**版本闸**：读到的版本 ≠ 30 时
-  **拒绝写入**并提示升级适配器，而不是静默写坏库（产品无 schema 兼容承诺）。
+- 依赖**未公开的内部表结构**（已知 `SCHEMA_VERSION` = **30 / 31**）。故设**版本闸**：
+  版本**不在白名单**（含比我们更新的版本、以及读不到版本）时 **拒绝写入**并提示升级适配器，
+  而不是静默写坏库（产品无 schema 兼容承诺）。
+  ⚠️ 代价要说清：白名单只是把"产品再升一版就整体停摆"推后，**下一次产品升版仍会停摆**——
+  这是刻意取舍（宁可停摆也不写坏库）；根治要靠"未知高版本 ⇒ 只读/降级提示"这类策略。
 - `title` 唯一化是**尽力而为**：事务内查重 + 冲突时退化为带随机尾缀；仍冲突则整体回滚，
   由引擎的注册失败路径处理。
 - `--request-id` 语义映射到 `messages.platform_message_id`（本产品无 conversationRequestId）；
@@ -61,8 +87,18 @@ import uuid
 from .adapter_base import TranscriptionAdapter, dumps_safe
 from .models import SessionMeta, VerifyItem
 
-#: 本适配器写入时认得的 schema 版本（实测 v0.21.2 = 30）。高于此值即拒绝写。
-KNOWN_SCHEMA_VERSION = 30
+#: 本适配器**认得（可安全写入）**的 schema 版本白名单 —— 实测口径：
+#:   · **30** = Hermes v0.21.2（2026-09-14 真机，原声明值）
+#:   · **31** = Hermes **v0.21.6**（2026-10-09 实测：产品自己的 `SessionDB` 把 v30 真库
+#:     迁移到 v31；白名单放开后写入成功，且产品代码 `list_sessions_rich(include_children=True)`
+#:     能列出该分支、`parent_session_id` 指向源会话、消息内容与 `message_uid` 均原样复制、
+#:     SQLite 官方 `FTS5 integrity-check` 通过、`messages_fts` 行数与 `messages` 一致）
+#: 白名单**之外**（含更高版本、以及读不到版本）一律拒绝写 —— 版本闸宁可停摆，也不写坏用户的库。
+#: ⚠️ 历史教训：此前是"等于单一值"的等值闸，产品升一个版本就整体停摆（v0.21.6 即如此）。
+KNOWN_SCHEMA_VERSIONS: tuple[int, ...] = (30, 31)
+
+#: 展示用（最新已知版本）；判定一律走上面的白名单。
+KNOWN_SCHEMA_VERSION = KNOWN_SCHEMA_VERSIONS[-1]
 
 DB_NAME = "state.db"
 REF_SEP = "#"  # "<db 绝对路径>#<session_id>"
@@ -140,15 +176,16 @@ class HermesAdapter(TranscriptionAdapter):
             return None
 
     def _gate(self, con: sqlite3.Connection) -> None:
-        """版本闸：版本不明或高于已知值 ⇒ 拒绝写（不静默写坏用户的库）。"""
+        """版本闸：版本不明、或不在白名单 ⇒ 拒绝写（不静默写坏用户的库）。"""
         v = self._schema_version(con)
+        known = "、".join(str(x) for x in KNOWN_SCHEMA_VERSIONS)
         if v is None:
             raise RuntimeError(
                 f"Hermes schema_version 读不到（{self.DB_PATH}）；"
                 f"拒绝写入。请确认这是 Hermes 的 state.db，或升级本适配器。")
-        if v != KNOWN_SCHEMA_VERSION:
+        if v not in KNOWN_SCHEMA_VERSIONS:
             raise RuntimeError(
-                f"Hermes schema_version = {v}，本适配器只认得 {KNOWN_SCHEMA_VERSION}；"
+                f"Hermes schema_version = {v}，本适配器认得的是 {known}；"
                 f"拒绝写入以免破坏你的会话库。请升级 session-fork 的 Hermes 适配器。")
 
     def _assert_writable_schema(self) -> None:
@@ -411,6 +448,12 @@ class HermesAdapter(TranscriptionAdapter):
             # 新会话不该继承"已归档/已隐藏"状态，否则刚造的产物在默认列表里看不见
             "archived": 0,
             "hidden": 0,
+            # v31 起新增的"自动归档"位：产品的语义是"只有它的清理扫描会置位、且只置在它归档的行上"。
+            # 我们既然把 archived 归零，就必须把它一起归零 ——
+            # 否则会产出 `archived=0 且 auto_archived=1` 这种产品语义下不该存在的组合
+            # （当前不影响可见性过滤，但属隐性状态污染）。
+            # v30 的 sessions 没有这一列，多出的键不会被 INSERT 使用（列清单取自实际表结构）。
+            "auto_archived": 0,
             "last_activity_at": now,
         })
         cur.execute(
@@ -599,7 +642,7 @@ class HermesAdapter(TranscriptionAdapter):
                     con.close()
             except Exception:
                 pass
-        gate_ok = ver == KNOWN_SCHEMA_VERSION
+        gate_ok = ver in KNOWN_SCHEMA_VERSIONS
         return [
             VerifyItem(
                 "Hermes 会话库 (state.db)", "L2" if msgs else "L1", bool(exists and msgs),
@@ -608,12 +651,15 @@ class HermesAdapter(TranscriptionAdapter):
             ),
             VerifyItem(
                 "schema_version 版本闸", "L2" if ver is not None else "L1", gate_ok,
-                f"schema_version = {ver}（本适配器认得 {KNOWN_SCHEMA_VERSION}；不等则拒绝写入）"
+                f"schema_version = {ver}（本适配器认得 "
+                f"{'、'.join(str(x) for x in KNOWN_SCHEMA_VERSIONS)}；白名单外一律拒绝写入）"
                 if ver is not None else "读不到 schema_version 表",
             ),
             VerifyItem(
                 "行存储契约 messages → 条目", "L2" if msgs else "L1", bool(msgs),
-                "按 `id`（插入序）读取；写入时排除自增主键，其余 25 列原样复制",
+                "按 `id`（插入序）读取；写入时排除自增主键，其余列**按实际列名动态**原样复制"
+                "（v0.21.6 新增的 message_uid / tool_call_uids / tool_call_uid / "
+                "absorbed_message_uids 等一并随行复制）",
             ),
             VerifyItem(
                 "FTS 索引", "L1", True,

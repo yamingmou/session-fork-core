@@ -59,7 +59,11 @@ def run_one(sid: str, adapter: str = "workbuddy", timeout: int = 600) -> dict:
     """对单个样本跑一次 dry-run，抽出可比对的事实。"""
     cmd = [PY, "-m", "fork_core.cli", "--adapter", adapter,
            "--session", sid, "--dry-run", "--name", "基线回归"]
-    t = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=timeout)
+    # ⚠️ 必须显式 encoding="utf-8"：子进程输出已被 harden_output() 固化为 UTF-8，
+    #    而 text=True 不带 encoding 时按本机 locale 解码（中文 Windows = cp936）⇒
+    #    输出里含 emoji（✅）时双字节边界错位即抛 UnicodeDecodeError。
+    t = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=timeout)
     out = t.stdout + t.stderr
     rec = {"id": sid, "rc": t.returncode}
     m = RE_CUT.search(out)

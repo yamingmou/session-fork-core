@@ -143,6 +143,25 @@ END""",
 ]
 
 
+#: v0.21.6（schema **31**）新增的列 —— 与真机迁移**逐字同形**（`ALTER TABLE … ADD COLUMN`）。
+#: 出处：2026-10-09 用产品自己的 `hermes_state.SessionDB` 把 v30 真库迁到 v31 后，
+#: 用 `PRAGMA table_info` 实测得到（`sessions` 58→62、`messages` 26→30）。
+V31_NEW_COLUMNS = {
+    "sessions": [
+        ("created_source", "TEXT"),
+        ("compression_overload_streak", "INTEGER NOT NULL DEFAULT 0"),
+        ("transport_profile", "TEXT"),
+        ("auto_archived", "INTEGER NOT NULL DEFAULT 0"),
+    ],
+    "messages": [
+        ("message_uid", "TEXT"),
+        ("absorbed_message_uids", "TEXT"),
+        ("tool_call_uids", "TEXT"),
+        ("tool_call_uid", "TEXT"),
+    ],
+}
+
+
 def build_db(path, schema_version=30):
     con = sqlite3.connect(path)
     con.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
@@ -151,6 +170,10 @@ def build_db(path, schema_version=30):
     con.execute(MESSAGES_DDL)
     for d in EXTRA_DDL:
         con.execute(d)
+    if schema_version >= 31:
+        for table, cols in V31_NEW_COLUMNS.items():
+            for col_name, col_decl in cols:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_decl}")
     con.execute("INSERT INTO schema_version (version) VALUES (?)", (schema_version,))
     con.commit()
     con.close()
@@ -260,6 +283,53 @@ print("✓ 旁路谱系索引（parent_id / at_seq）")
 errs = verify_branch(adapter, f"{DB}#{NEW}", NEW, res.cut, SRC)
 assert errs == [], f"verify_branch 应零错误，实为 {errs}"
 print("✓ verify_branch 零错误")
+
+print()
+print("=== 3.5 v0.21.6（schema 31）：闸门必须放行，且新增列必须原样复制 ===")
+# 出处：2026-10-09 实测 —— 产品 v0.21.6 把 schema_version 升到 31 后，
+# 旧的"等值闸"（只认 30）会**直接拒绝写入**（真机上用户就是这样被拦下的）。
+# 本条固化两件事：① 31 在白名单里、写路径放行；② v31 新增的 8 个列随行原样复制。
+os.rename(DB, DB + ".bak31")
+build_db(DB, schema_version=31)
+seed_source(DB)
+con = sqlite3.connect(DB)
+# 模拟"由产品写出的" v31 取值（真机迁移后这些列就长这样）
+con.execute("UPDATE messages SET message_uid='uid-' || id WHERE session_id=?", (SRC,))
+# 顺带把源会话设成"已归档 + 自动归档"，验证分支**两个归档位都会被归零**
+# （隐患：只清 archived 会留下 `archived=0 且 auto_archived=1` 这种产品语义下不该存在的组合）
+con.execute("UPDATE sessions SET created_source='cli', transport_profile='local',"
+            " archived=1, auto_archived=1 WHERE id=?", (SRC,))
+con.commit()
+con.close()
+
+adapter31 = get_adapter("hermes")
+res31 = create_fork(adapter31, session_ref=SRC, line_no=4, name="v31 验收分支", backups_dir=BK)
+assert res31.ok, res31.error
+NEW31 = res31.new_id
+print(f"✓ v31 写入放行：cut={res31.cut} / replacements={res31.replacements} / verify={res31.verified}")
+assert res31.verified is True
+
+src_uids = [r["message_uid"] for r in
+            q(DB, "SELECT message_uid FROM messages WHERE session_id=? ORDER BY id", (SRC,))][:res31.cut]
+new_uids = [r["message_uid"] for r in
+            q(DB, "SELECT message_uid FROM messages WHERE session_id=? ORDER BY id", (NEW31,))]
+assert new_uids == src_uids, f"v31 新增列必须原样复制：{new_uids} != {src_uids}"
+print(f"✓ messages.message_uid 原样复制（同序同值）：{new_uids}")
+
+row31 = q(DB, "SELECT created_source, transport_profile, compression_overload_streak, auto_archived,"
+              " archived, hidden FROM sessions WHERE id=?", (NEW31,))[0]
+assert row31["created_source"] == "cli" and row31["transport_profile"] == "local", \
+    f"v31 sessions 新增列未原样复制：{dict(row31)}"
+assert row31["archived"] == 0 and row31["hidden"] == 0 and row31["auto_archived"] == 0, \
+    f"分支不得继承任何归档/隐藏态（含 v31 的 auto_archived）：{dict(row31)}"
+print(f"✓ sessions 新列随行复制：created_source={row31['created_source']} / "
+      f"transport_profile={row31['transport_profile']} / "
+      f"streak={row31['compression_overload_streak']}；"
+      f"归档位全部归零：archived={row31['archived']} hidden={row31['hidden']} "
+      f"auto_archived={row31['auto_archived']}（源会话是 archived=1/auto_archived=1）")
+
+os.remove(DB)
+os.rename(DB + ".bak31", DB)
 
 print()
 print("=== 4. 标题全局唯一（撞名必须让路，不能 IntegrityError 打死整个事务）===")
