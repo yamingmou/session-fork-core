@@ -175,38 +175,48 @@ def find_pasted_request_id(adapter, lines: list[dict]) -> str | None:
     return m.group(1) if m else None
 
 
-def guard_pasted_request_id(adapter, lines: list[dict], cut: int, src_id: str) -> None:
-    """硬闸：本轮指令贴了 request id、执行时却没走 `--request-id` ⇒ 停下，不按默认切。
+def apply_pasted_request_id(adapter, lines: list[dict], cut: int, src_id: str) -> tuple[int, str | None]:
+    """本轮消息里贴了 request id ⇒ **按它切**，不静默按默认切、也不拒绝执行。
 
-    真实事故（2026-11-04，用户报告「打了分支，但直接复制了历史，没有从断点开始」）：
-    用户贴了 `{"conversationRequestId":"f2fb6086…","conversationId":"47009c9c…"}` 并说"打分支"，
-    执行者只跑了 `--session current` ⇒ 默认切点 **L13495**，而该 id 对应 **L11470**，
-    相差 2025 行 ⇒ 产物把整段历史都复制了进去（13,495 行 / 73 MB），
-    用户拿到一条"断点根本没切到"的分支，而工具自始至终**没有报错**。
+    返回 `(新的切点, 给用户看的说明或 None)`。
 
-    判据（不猜）：该 id 能在本会话解析出**不同于默认的**切点 ⇒ "两种意图都成立"，
-    必须由人二选一，工具不许替用户默认。id 解析不出来（属于别的会话 / 形态不对）
-    或解析出的切点与默认一致 ⇒ 不拦（此时不存在分歧）。
+    这个函数是**两次改法的沉淀**（同一类事故，2026-11-04 一晚之内）：
+
+    事故现场：用户贴了 `{"conversationRequestId":"f2fb6086…"}` 说"从这里打分支"，
+    执行方只跑 `--session current` ⇒ 默认切点 L13495，而该 id 对应 L11470，
+    相差 2025 行 ⇒ 产物把整段历史都复制了进去，而工具**没有任何报错**。
+
+      ① v2.4.22 先做成「**拒绝**」：把"静默切错"变成"报错停下"，并给出两条命令。
+         **实测失败**：执行方**不照抄报错里的命令**——当天它被拦之后，自己看着
+         「P8 定稿」这个词改用 `--line 13479` 猜了个位置，于是又切错一次。
+         对用户的结果是"还是打不成"。
+      ② v2.4.23 改成「**采用并明示**」：贴了 id 就按 id 切，同时把"我按什么切、默认本会切哪"
+         写进 `how`（`Split : …` 行）与 stderr，最后一行给出反向逃生口。
+         依据：执行方可以忽略文档、可以忽略报错，但它**一定会把"打分支"这个动作跑完** ——
+         那就让这个动作自己用对 id。
+
+    判据没变（也不猜）：该 id 能在**本会话**解析出**不同于默认**的切点才动它；
+    解析不出（属于别的会话 / 落点不是完整回复边界）或与默认切点相同 ⇒ 原样返回、保持静默。
     """
     rid = find_pasted_request_id(adapter, lines)
     if not rid:
-        return
+        return cut, None
     try:
         rid_cut, _ = locate_split_point(adapter, lines, None, None, rid)
     except ForkError:
-        return  # 该 id 不在本会话，或落点不是完整回复边界 ⇒ 默认切点无可比对象，不构成分歧
+        return cut, None
     if rid_cut == cut:
-        return
+        return cut, None
     delta = cut - rid_cut
-    raise ForkError(
-        f"本轮指令里贴了 request id {rid!r}，但这次调用没有指定切点 —— 拒绝按默认切。\n"
-        f"  默认模式会切在 L{cut}（上一轮输出结束）；这个 id 对应 L{rid_cut}"
-        f"（相差 {abs(delta)} 行，{'更靠前' if delta > 0 else '更靠后'}）。\n"
-        f"  ① 想按你贴的那条回复切（通常就是你要的）：\n"
-        f"      … scripts/create_branch.py --session {src_id} --request-id {rid} --name \"<分支名>\"\n"
-        f"  ② 确实要默认截断，请把切点写出来：--line {cut}\n"
-        f"  ⚠️ 之所以拦：静默按默认切，会得到一条「把整段历史都复制进去」的分支，"
-        f"而你自始至终以为它是断点分支。"
+    notify(
+        f"⚠️  本轮消息里贴了 request id {rid}：**已按它切在 L{rid_cut}**"
+        f"（默认切点本会是 L{cut}，相差 {abs(delta)} 行）。\n"
+        f"    若你要的确实是默认切点，用 --line {cut} 重跑；要指定别的回复，用 --request-id <id>。",
+        quietable=False,
+    )
+    return rid_cut, (
+        f"本轮消息贴了 request id {rid} ⇒ 按它切在 L{rid_cut}"
+        f"（默认本会是 L{cut}）"
     )
 
 
@@ -965,11 +975,11 @@ def create_fork(
             running = probe()
         if running and running == src_id and not whole:
             cut, total, note = locate_before_current_turn(adapter, lines)
-            # 本轮指令贴了 request id 却没有 --request-id ⇒ 停下（不替用户默认）。
-            # 真实事故见 guard_pasted_request_id 的 docstring：静默切在默认点，
-            # 产物把整段历史都复制了进去，而用户以为切在了他给的那条回复上。
-            guard_pasted_request_id(adapter, lines, cut, src_id)
-            how = f"in-session · 上一轮输出结束 · {note}"
+            # 本轮指令贴了 request id ⇒ 按它切（v2.4.23：既不拒绝、也不静默按默认切）。
+            # 两种改法的来龙去脉见 apply_pasted_request_id 的 docstring。
+            cut, rid_note = apply_pasted_request_id(adapter, lines, cut, src_id)
+            how = (f"in-session · {rid_note}" if rid_note
+                   else f"in-session · 上一轮输出结束 · {note}")
         else:
             cut, total = locate_last_reply(adapter, lines)
             why = "显式 --whole" if (whole and running == src_id) else "未检出会话内上下文"

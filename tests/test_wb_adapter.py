@@ -735,6 +735,8 @@ print("✓ 退化兜底: 无 user 消息 / 单轮会话 → 明确退回整份�
 #      用户贴 {"conversationRequestId":"f2fb…","conversationId":"…"} 说"打分支"，
 #      执行者只跑 --session current ⇒ 静默切在默认点（与 id 落点相差 2025 行）
 #      ⇒ 产物把整段历史都复制了进去，而工具从头到尾没报错。
+#      ⚠️ v2.4.22 曾做成"拒绝执行"，实测**执行方不照抄报错里的命令**（它改用 --line 猜位置），
+#         结果是"还是打不成" ⇒ v2.4.23 改为"**采用并明示**"：贴了 id 就按它切。
 _sem4 = "SEM-0000-0000-0000-000000000005"
 _rid4 = "f2fb6086ca3f42d6822b79f6898f60f4"
 _mk_session(_sem4, 3000)
@@ -751,26 +753,25 @@ _write_session(_sem4, [
 ])
 os.environ["CLAUDE_SESSION_ID"] = _sem4
 try:
-    # ① 负例：贴了 id 却按默认走 ⇒ 拒绝，且报错里必须同时给出两条可执行出路
-    try:
-        _cf6(_a6, _sem4, name="T", dry_run=True, backups_dir=os.path.join(_sem_tmp, "bk"))
-        raise AssertionError("贴了 request id 却静默按默认切 = 复制整段历史，必须硬失败")
-    except _eng.ForkError as _e4:
-        _m4 = str(_e4)
-        assert _rid4 in _m4 and "--request-id" in _m4 and "--line" in _m4, _m4
-        assert "L2" in _m4 and "L4" in _m4, f"应同时报出两个切点供人判：{_m4}"
-    # ② 正例：显式 --request-id ⇒ 切在他给的那条回复（L2）
+    # ① 贴了 id、没指定切点 ⇒ **自动按 id 切在 L2**，且说明里必须写清"默认本会是 L4"
+    _r4a = _cf6(_a6, _sem4, name="T", dry_run=True, backups_dir=os.path.join(_sem_tmp, "bk"))
+    assert _r4a.cut == 2, f"应自动按贴的 request id 切在 L2，实为 L{_r4a.cut}"
+    assert "request id" in _r4a.how and _rid4 in _r4a.how, _r4a.how
+    assert "L2" in _r4a.how and "L4" in _r4a.how, f"说明里应同时出现实际切点与默认切点：{_r4a.how}"
+    print(f"✓ 贴 id 未指定切点 → 自动按 id 切 · {_r4a.how}")
+    # ② 显式 --request-id ⇒ 同一位置（L2），说明里不再带"默认本会是"
     _r4 = _cf6(_a6, _sem4, name="T2", dry_run=True, request_id=_rid4,
                backups_dir=os.path.join(_sem_tmp, "bk"))
     assert _r4.cut == 2, _r4.cut
-    # ③ 逃生口：确实要默认截断 ⇒ 显式 --line 4 即可放行
+    assert "默认本会是" not in _r4.how, _r4.how
+    # ③ 逃生口：确实要默认截断 ⇒ 显式 --line 4 即可
     _r4b = _cf6(_a6, _sem4, name="T3", dry_run=True, line_no=4,
                 backups_dir=os.path.join(_sem_tmp, "bk"))
     assert _r4b.cut == 4, _r4b.cut
 finally:
     os.environ.pop("CLAUDE_SESSION_ID", None)
 
-# ④ 不构成分歧时**不得误拦**：id 落点与默认切点相同 → 本来就没有两种意图
+# ④ id 落点与默认切点相同 → 不吭声（不该在输出里制造"我改过切点"的假象）
 _sem5 = "SEM-0000-0000-0000-000000000006"
 _mk_session(_sem5, 4000)
 _write_session(_sem5, [
@@ -782,9 +783,10 @@ _write_session(_sem5, [
 os.environ["CLAUDE_SESSION_ID"] = _sem5
 try:
     _r5 = _cf6(_a6, _sem5, name="T4", dry_run=True, backups_dir=os.path.join(_sem_tmp, "bk"))
-    assert _r5.cut == 2, f"id 落点与默认切点一致时不该拦，cut={_r5.cut}"
+    assert _r5.cut == 2, f"id 落点与默认切点一致时应原样返回，cut={_r5.cut}"
+    assert "request id" not in _r5.how, f"两点相同就不该在说明里强调 id：{_r5.how}"
 finally:
     os.environ.pop("CLAUDE_SESSION_ID", None)
-print("✓ 硬闸: 贴 id 未指定切点→拒绝（给两条出路）· 显式 request-id→L2 · --line→L4 · 无分歧→放行")
+print("✓ 贴 id 的切点判定: 自动按 id 切(L2，明示默认 L4) · 显式 request-id→L2 且不赘述 · --line→L4 · 两点相同→静默")
 shutil.rmtree(_sem_tmp)
 print("\n✅ 默认截断点语义测试通过（in-session vs whole 分派 + resolve_session 归属 + 退化兜底）")

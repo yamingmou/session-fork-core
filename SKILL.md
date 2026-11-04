@@ -7,7 +7,7 @@ display_name_en: Session Fork
 description: 把一个会话的工作现场（上下文、已确认结论、已做步骤、工具结果）整体复制成独立分支，供用户从任意节点换方向重走、并行试几条路、或保住原线不被带偏；分叉对象是工作现场而非聊天记录，对话 / 任务 / 方案 / 代码 / 写作 / 调研均可。当你说"打分支""会话分叉""把这个任务复制成新分支""以某条回复为界新建对话""并行试几条路""把对话截断复制"，或提到 fork this session / branch this task 时使用。底层为 fork-core 通用引擎，跨产品可用。
 description_zh: 把走到一半的工作整体复制成独立分支——上下文、已确认的结论、做过的步骤、工具结果都跟着走，从任意节点接着推进，原线不受影响。不只是对话：任务、方案、代码、写作、调研都能分叉（如「这条方向走岔了，回到上一轮重新来」「同一个任务并行试几条路」）。注意：分叉复制的是会话上下文，工作区产物不会跟着回退——除非产物自身有版本记录（如 git），否则只有当前最终态。
 description_en: Duplicate any work-in-progress into an independent branch — not just conversations, but tasks, plans, code, writing and research. Context, confirmed conclusions, completed steps and tool results all come along; resume from any point while the original line stays untouched and keeps running. Note that a fork copies the session context only; workspace artifacts are not rolled back — unless they are version-controlled (e.g. git), only their final state exists.
-version: 2.4.22
+version: 2.4.23
 author: OfferKuai (Offer快) Team
 license: MIT
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
@@ -104,11 +104,11 @@ session-fork/
 > **用户只是在说文字**（哪怕他说的是"那条**回复**"）→ 用 **`--match "<那段文字>"`**。
 > ⚠️ `--request-id` **只能装 ID**，不能装文字。
 >
-> ⛔ **本条消息里出现 `conversationRequestId` ⇒ 你**必须**把它传进 `--request-id`**（连同 `conversationId` 一起给 `--session`）。
-> 只跑 `--session current`（默认模式）会被工具**拒绝并退出 1**（`本轮指令里贴了 request id … 拒绝按默认切`）——
-> 因为"贴了 ID"就等于用户指定了断点，而默认切点通常离它很远（真实事故：差 2025 行，
-> 产物把整段历史都复制了进去，用户却以为切在了他给的那条回复上）。
-> 确实要默认截断，就把切点写出来（`--line <默认切点>`，报错里会给出具体行号）。
+> ✅ **本条消息里出现 `conversationRequestId` ⇒ 工具会自动按它切**（默认模式即可，**不必**再手工拼 `--request-id`）：
+> 输出第一行与 `Split :` 行都会写明「已按它切在 Lx（默认本会是 Ly）」，并给出反向逃生口 `--line Ly`。
+> 想显式表达（更稳妥、也便于回读）：把它传进 `--request-id`，`conversationId` 给 `--session`。
+> ⚠️ 若你要的**确实是默认切点**，用 `--line <提示里给出的行号>` 覆盖。
+> （历史：v2.4.22 曾把这种情形做成「拒绝执行」，实测执行方不照抄报错里的命令、转而猜位置 ⇒ 改成现在的**采用并明示**。）
 
 > **⚠️ 动手前先做这一件事**：下面的命令**统一写成 WorkBuddy 形式**（`python3 "${SK}/scripts/create_branch.py" …`）。**若你不在 WorkBuddy 里**，先读「**Step 0 · 先判定你在哪个产品里**」，把前缀换成 `fork`（pip 渠道）或你所在产品的技能目录路径，**并补上 `--adapter <你的产品>`**——其余参数完全相同。
 >
@@ -459,7 +459,7 @@ python3 "${SK}/scripts/create_branch.py" --session current --adapter openclaw   
 | 非 WorkBuddy | 分支建好但**看不到** | 各产品不同，且**有反直觉项**（如 Codex 桌面版也要 ⌘Q 重开）| **照脚本输出的 `ACTION` 行做**；逐产品要点见 **Step 0「分支怎么出现」表**——不要照搬 WorkBuddy 的说法 |
 | **仅 WorkBuddy** | 分支打开后**末尾多了一段不是我的内容** | 主进程在创建后继续向分支文件追加了消息（脚本不锁只读）| 用 `--fix <分支会话ID>` 重截断到谱系记录的 `at_seq`（**仅 workbuddy 支持**） |
 | 全部 | 原会话之后的新消息没进分支 | 快照特性（复制发生在读取时刻）——正常行为，不是丢数据 | 无需处理 |
-| 全部 | `本轮指令里贴了 request id … 但这次调用没有指定切点 —— 拒绝按默认切` | 用户贴了「复制请求 ID」的 JSON，命令却没带 `--request-id`；默认切点与该 ID 对应的回复可能相差很多行（真实事故：2025 行 ⇒ 产物把整段历史都复制了进去） | 照报错给的 ① 带上 `--session <conversationId> --request-id <conversationRequestId>` 重跑；确实要默认截断则显式 `--line <报错给出的默认切点>` |
+| 全部 | `本轮消息里贴了 request id …：已按它切在 Lx（默认切点本会是 Ly）` | **正常提示、不是错误**：用户在这条消息里贴了「复制请求 ID」的 JSON，而命令走的是默认模式 ⇒ 工具**按贴的 id 切**（v2.4.23 起；此前的 v2.4.22 是拒绝执行） | 无需处理。若确实要默认切点，按提示用 `--line Ly` 重跑；要别的回复则 `--request-id <id>` |
 | 全部 | 分支文件找不到 / 索引有记录但文件被删 | 外部清理 | 无恢复必要则删该索引记录（分支是快照，内容已在源会话） |
 | 全部 | `--verify` 体检某分支报"源 id 残留" | 两种可能：①（v2.4.3 及更早）该分支在 v2.2.0 前创建，替换不彻底；②**误报**——fork 后产品追加的消息里恰好出现源 id（如一次 `ls` 输出中恰好有个同名目录，WorkBuddy 的实例是 `ls ~/.workbuddy/tasks`）。v2.4.4 起追加区**只对工具/函数 I/O 字段宽容**，正文等其余字段仍从严 | ①历史脏分支：重新打分支后删除旧分支（备份后）；②升级到 v2.4.4+ 即可。若该分支谱系 `at_seq` 缺失或与实际不符，校验会**故意退回更宽的旧边界**——宁可误报也不漏检，此时重打一次该分支即可 |
 
