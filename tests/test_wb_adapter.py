@@ -729,5 +729,62 @@ try:
 finally:
     os.environ.pop("CLAUDE_SESSION_ID", None)
 print("✓ 退化兜底: 无 user 消息 / 单轮会话 → 明确退回整份（有 note，不静默）")
+
+# 16g. 硬闸：本轮指令贴了 request id、却没走 --request-id ⇒ **必须停下**
+#      事故现场（2026-11-04，用户报告「打了分支，但直接复制了历史，没有从断点开始」）：
+#      用户贴 {"conversationRequestId":"f2fb…","conversationId":"…"} 说"打分支"，
+#      执行者只跑 --session current ⇒ 静默切在默认点（与 id 落点相差 2025 行）
+#      ⇒ 产物把整段历史都复制了进去，而工具从头到尾没报错。
+_sem4 = "SEM-0000-0000-0000-000000000005"
+_rid4 = "f2fb6086ca3f42d6822b79f6898f60f4"
+_mk_session(_sem4, 3000)
+_write_session(_sem4, [
+    _mk_user("第一轮的问题"),                                                          # L1
+    {"type": "message", "role": "assistant",
+     "providerData": {"conversationRequestId": _rid4},
+     "content": [{"type": "output_text", "text": "第一轮的完整回答（这条就是断点）"}]},   # L2 ← id 落点
+    _mk_user("第二轮的问题"),                                                          # L3
+    _mk_asst("第二轮的完整回答"),                                                       # L4 ← 默认切点
+    _mk_user('{"conversationRequestId":"%s","conversationId":"%s"}  从这里打分支'
+             % (_rid4, _sem4)),                                                       # L5 ← 本轮指令
+    _mk_asst("正在打分支…"),                                                           # L6
+])
+os.environ["CLAUDE_SESSION_ID"] = _sem4
+try:
+    # ① 负例：贴了 id 却按默认走 ⇒ 拒绝，且报错里必须同时给出两条可执行出路
+    try:
+        _cf6(_a6, _sem4, name="T", dry_run=True, backups_dir=os.path.join(_sem_tmp, "bk"))
+        raise AssertionError("贴了 request id 却静默按默认切 = 复制整段历史，必须硬失败")
+    except _eng.ForkError as _e4:
+        _m4 = str(_e4)
+        assert _rid4 in _m4 and "--request-id" in _m4 and "--line" in _m4, _m4
+        assert "L2" in _m4 and "L4" in _m4, f"应同时报出两个切点供人判：{_m4}"
+    # ② 正例：显式 --request-id ⇒ 切在他给的那条回复（L2）
+    _r4 = _cf6(_a6, _sem4, name="T2", dry_run=True, request_id=_rid4,
+               backups_dir=os.path.join(_sem_tmp, "bk"))
+    assert _r4.cut == 2, _r4.cut
+    # ③ 逃生口：确实要默认截断 ⇒ 显式 --line 4 即可放行
+    _r4b = _cf6(_a6, _sem4, name="T3", dry_run=True, line_no=4,
+                backups_dir=os.path.join(_sem_tmp, "bk"))
+    assert _r4b.cut == 4, _r4b.cut
+finally:
+    os.environ.pop("CLAUDE_SESSION_ID", None)
+
+# ④ 不构成分歧时**不得误拦**：id 落点与默认切点相同 → 本来就没有两种意图
+_sem5 = "SEM-0000-0000-0000-000000000006"
+_mk_session(_sem5, 4000)
+_write_session(_sem5, [
+    _mk_user("问题"),
+    {"type": "message", "role": "assistant", "providerData": {"conversationRequestId": _rid4},
+     "content": [{"type": "output_text", "text": "回答（断点）"}]},
+    _mk_user('{"conversationRequestId":"%s"}  打分支' % _rid4),
+])
+os.environ["CLAUDE_SESSION_ID"] = _sem5
+try:
+    _r5 = _cf6(_a6, _sem5, name="T4", dry_run=True, backups_dir=os.path.join(_sem_tmp, "bk"))
+    assert _r5.cut == 2, f"id 落点与默认切点一致时不该拦，cut={_r5.cut}"
+finally:
+    os.environ.pop("CLAUDE_SESSION_ID", None)
+print("✓ 硬闸: 贴 id 未指定切点→拒绝（给两条出路）· 显式 request-id→L2 · --line→L4 · 无分歧→放行")
 shutil.rmtree(_sem_tmp)
 print("\n✅ 默认截断点语义测试通过（in-session vs whole 分派 + resolve_session 归属 + 退化兜底）")

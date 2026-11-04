@@ -153,6 +153,63 @@ def locate_before_current_turn(adapter, lines: list[dict]) -> tuple[int, int, st
     return cut, total, f"L{last_user} 之前无完整回复（单轮会话）→ 退回整份语义"
 
 
+#: UI「复制请求 ID」得到的 JSON 原文：`{"conversationRequestId":"…","conversationId":"…"}`。
+#: 只认**字段名 + 值**的形态，不认"随便一个 32 位十六进制串"（traceId 也是这个形状，
+#: 但 traceId **不能**当断点用）。
+_RE_PASTED_REQ_ID = re.compile(r'"conversationRequestId"\s*:\s*"([A-Za-z0-9_-]{8,64})"')
+
+
+def find_pasted_request_id(adapter, lines: list[dict]) -> str | None:
+    """**本轮** user 消息里是否贴了一个 request id（= 用户明确了"切在哪一条回复"）。
+
+    只扫最后一条 user 消息：贴 ID 是"这次操作切哪儿"的指令，不是历史内容。
+    """
+    last_user = None
+    for i, o in enumerate(lines, 1):
+        if adapter.is_user_message(o):
+            last_user = i
+    if last_user is None:
+        return None
+    text = adapter.get_text(lines[last_user - 1]) or ""
+    m = _RE_PASTED_REQ_ID.search(text)
+    return m.group(1) if m else None
+
+
+def guard_pasted_request_id(adapter, lines: list[dict], cut: int, src_id: str) -> None:
+    """硬闸：本轮指令贴了 request id、执行时却没走 `--request-id` ⇒ 停下，不按默认切。
+
+    真实事故（2026-11-04，用户报告「打了分支，但直接复制了历史，没有从断点开始」）：
+    用户贴了 `{"conversationRequestId":"f2fb6086…","conversationId":"47009c9c…"}` 并说"打分支"，
+    执行者只跑了 `--session current` ⇒ 默认切点 **L13495**，而该 id 对应 **L11470**，
+    相差 2025 行 ⇒ 产物把整段历史都复制了进去（13,495 行 / 73 MB），
+    用户拿到一条"断点根本没切到"的分支，而工具自始至终**没有报错**。
+
+    判据（不猜）：该 id 能在本会话解析出**不同于默认的**切点 ⇒ "两种意图都成立"，
+    必须由人二选一，工具不许替用户默认。id 解析不出来（属于别的会话 / 形态不对）
+    或解析出的切点与默认一致 ⇒ 不拦（此时不存在分歧）。
+    """
+    rid = find_pasted_request_id(adapter, lines)
+    if not rid:
+        return
+    try:
+        rid_cut, _ = locate_split_point(adapter, lines, None, None, rid)
+    except ForkError:
+        return  # 该 id 不在本会话，或落点不是完整回复边界 ⇒ 默认切点无可比对象，不构成分歧
+    if rid_cut == cut:
+        return
+    delta = cut - rid_cut
+    raise ForkError(
+        f"本轮指令里贴了 request id {rid!r}，但这次调用没有指定切点 —— 拒绝按默认切。\n"
+        f"  默认模式会切在 L{cut}（上一轮输出结束）；这个 id 对应 L{rid_cut}"
+        f"（相差 {abs(delta)} 行，{'更靠前' if delta > 0 else '更靠后'}）。\n"
+        f"  ① 想按你贴的那条回复切（通常就是你要的）：\n"
+        f"      … scripts/create_branch.py --session {src_id} --request-id {rid} --name \"<分支名>\"\n"
+        f"  ② 确实要默认截断，请把切点写出来：--line {cut}\n"
+        f"  ⚠️ 之所以拦：静默按默认切，会得到一条「把整段历史都复制进去」的分支，"
+        f"而你自始至终以为它是断点分支。"
+    )
+
+
 # 系统会在 user 消息首部注入上下文块（<system-reminder …>、<memory …> 等）。
 # 预览若直接取消息开头，打印出来的是这串 wrapper —— 人拿着它**核对不出"是不是我刚说的那句话"**，
 # 等于"打印了锚点原文"这件事白做。故跳过首部包裹块，取其后的**人类文本**。
@@ -908,6 +965,10 @@ def create_fork(
             running = probe()
         if running and running == src_id and not whole:
             cut, total, note = locate_before_current_turn(adapter, lines)
+            # 本轮指令贴了 request id 却没有 --request-id ⇒ 停下（不替用户默认）。
+            # 真实事故见 guard_pasted_request_id 的 docstring：静默切在默认点，
+            # 产物把整段历史都复制了进去，而用户以为切在了他给的那条回复上。
+            guard_pasted_request_id(adapter, lines, cut, src_id)
             how = f"in-session · 上一轮输出结束 · {note}"
         else:
             cut, total = locate_last_reply(adapter, lines)
