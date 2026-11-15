@@ -1,9 +1,11 @@
 """OpenClaw ≥2026.9.x（SQLite 后端）契约测试（fixture 级，不依赖真实 OpenClaw）。
 
-固化的契约来自一手真机证据（2026-09-14，可本地复跑核对）：
+固化的契约来自一手证据：
   - 真机 openclaw@2026.9.4 的 openclaw-agent.sqlite 实测表结构
-  - 实测踩出的两条坑：缺 session_transcript_index_state → "projection is rebuilding"；
-    直接写入的 session_nodes 会被触发器置 entry_valid=0 → 需官方 doctor 校验
+  - 2026.11.3 源码 / DDL（`/tmp/openclaw-2026.11.3-schema.sql`）：session_nodes
+    **已无触发器**，entry_valid 由写入方内联写 1；读取侧要求 ==1 否则
+    `invalid persisted session row requires repair`
+  - 实测踩出的坑：缺 session_transcript_index_state → "projection is rebuilding"
 
 本测试只固化**本适配器的写入契约**（7 张表 / 行数 / header 替换 / 备份介质）。
 "产物能被真机认"属 L3 产品终验，由 lab 下的真机脚本负责，不在单元测试里伪造。
@@ -36,8 +38,11 @@ CREATE TABLE session_windows (
   transcript_updated_at INTEGER, transcript_observed_at INTEGER, status TEXT
 ) STRICT;
 CREATE TABLE transcript_events (
-  session_id TEXT NOT NULL, seq INTEGER NOT NULL, event_json TEXT NOT NULL,
-  created_at INTEGER NOT NULL, PRIMARY KEY (session_id, seq)
+  session_id TEXT NOT NULL, seq INTEGER NOT NULL, event_json TEXT,
+  created_at INTEGER NOT NULL, event_zstd BLOB, PRIMARY KEY (session_id, seq),
+  -- 2026.11.3 的 CHECK：event_json 与 event_zstd 恰有其一（≥1024B 事件走 zstd）
+  CHECK ((event_json IS NOT NULL AND event_zstd IS NULL)
+      OR (event_json IS NULL AND event_zstd IS NOT NULL))
 ) STRICT;
 CREATE TABLE transcript_event_identities (
   session_id TEXT NOT NULL, event_id TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -60,16 +65,13 @@ CREATE TABLE session_transcript_index_state (
 ) STRICT;
 CREATE TABLE session_nodes (
   session_key TEXT NOT NULL PRIMARY KEY, current_session_id TEXT NOT NULL,
-  entry_json TEXT NOT NULL, entry_valid INTEGER NOT NULL DEFAULT 0,
+  entry_json TEXT NOT NULL,
+  entry_valid INTEGER NOT NULL DEFAULT 0 CHECK (entry_valid IN (-1, 0, 1)),
   updated_at INTEGER NOT NULL, created_at INTEGER,
   fork_source_session_key TEXT, fork_source_session_id TEXT, fork_source_entry_id TEXT,
-  parent_session_key TEXT
+  parent_session_key TEXT, spawned_by TEXT
 ) STRICT;
--- 真机上的触发器：任何写入都把 entry_valid 置 0（校验权归产品）
-CREATE TRIGGER session_nodes_entry_valid_after_insert
-AFTER INSERT ON session_nodes BEGIN
-  UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
-END;
+-- 2026.11.3 已无任何触发器（legacy 触发器被官方迁移 DROP）；entry_valid 由写入方写 1。
 """)
 
 now = 1800000000000
@@ -86,7 +88,7 @@ EVENTS = [
     {"type": "custom", "customType": "openclaw.cache-ttl", "id": "cu02", "parentId": "m002", "data": {"ttl": 1}},
 ]
 for seq, o in enumerate(EVENTS):
-    con.execute("INSERT INTO transcript_events VALUES (?,?,?,?)",
+    con.execute("INSERT INTO transcript_events (session_id,seq,event_json,created_at) VALUES (?,?,?,?)",
                 (SRC_ID, seq, json.dumps(o, ensure_ascii=False), now))
     con.execute("INSERT INTO transcript_event_identities VALUES (?,?,?,?,?,?,?)",
                 (SRC_ID, o["id"], seq, o["type"], o.get("parentId"), None, now))
@@ -102,9 +104,12 @@ con.execute("INSERT INTO transcript_rewrite_watermarks VALUES (?,?,?)", (SRC_ID,
 msg_cnt = sum(1 for o in EVENTS[1:] if o["type"] == "message")
 con.execute("INSERT INTO session_transcript_index_state VALUES (?,?,?,0,?,?,?)",
             (SRC_ID, len(EVENTS) - 1, EVENTS[-1]["id"], len(EVENTS) - 1, msg_cnt, now))
-con.execute("INSERT INTO session_nodes VALUES (?,?,?,1,?,?,?,?,?,?)",
-            (SRC_KEY, SRC_ID, json.dumps({"sessionId": SRC_ID, "updatedAt": now}), now, now,
-             None, None, None, None))
+con.execute(
+    "INSERT INTO session_nodes (session_key,current_session_id,entry_json,entry_valid,"
+    "updated_at,created_at,fork_source_session_key,fork_source_session_id,"
+    "fork_source_entry_id,parent_session_key,spawned_by) VALUES (?,?,?,1,?,?,?,?,?,?,?)",
+    (SRC_KEY, SRC_ID, json.dumps({"sessionId": SRC_ID, "updatedAt": now}), now, now,
+     None, None, None, None, None))
 con.commit()
 con.close()
 
@@ -176,14 +181,20 @@ assert st["active_event_count"] == cnt(
 assert st["needs_rebuild"] == 0
 print("✓ 投影进度自洽（indexed_seq / leaf_event_id / active_*_count / needs_rebuild=0）")
 
-# 9. 节点：entry_valid 归产品校验（触发器置 0），谱系字段已写
+# 9. 节点：entry_valid 必须写 1（2026.11.3 无触发器；doctor 对干净行是 no-op）
 node = con.execute("SELECT * FROM session_nodes WHERE current_session_id=?", (NEW,)).fetchone()
-assert node["entry_valid"] == 0, "entry_valid 必须留 0（交由 openclaw doctor 校验）"
-assert node["fork_source_session_id"] == SRC_ID
-assert node["parent_session_key"] == SRC_KEY
+assert node["entry_valid"] == 1, "entry_valid 必须写 1（读侧严格 ===1，写 0 必读不出来）"
 assert node["session_key"] == f"agent:main:fork-{NEW[:8]}"
-assert SRC_ID not in node["entry_json"], "索引条目里不应残留源 id"
-print("✓ session_nodes：entry_valid=0（待产品校验）+ 原生谱系字段")
+assert node["fork_source_session_id"] == SRC_ID
+# 血缘三条等式（2026.11.3 validateCanonicalSessionRowEntry，read/admission 都生效）
+nentry = json.loads(node["entry_json"])
+assert node["parent_session_key"] == (nentry.get("parentSessionKey") or nentry.get("spawnedBy"))
+assert node["spawned_by"] == nentry.get("spawnedBy")
+assert node["fork_source_session_key"] == (nentry.get("forkSource") or {}).get("sessionKey")
+assert node["parent_session_key"] == SRC_KEY and node["fork_source_session_key"] == SRC_KEY
+assert (nentry.get("forkSource") or {}).get("sessionId") == SRC_ID
+assert node["spawned_by"] is None, "源 entry 无 spawnedBy ⇒ 列必须 NULL"
+print("✓ session_nodes：entry_valid=1 + 血缘列与 entry_json 三条等式自洽")
 
 # 10. 分支转录内容 = 源前缀，且 header.id 已换、条目 id 保留
 out = adapter.read_lines(r.dst_path)
@@ -206,16 +217,20 @@ assert os.path.getsize(baks[0]) > 0
 assert adapter.backup_note() != "source jsonl only, no database copy"
 print("✓ backup_transcript 备份整个数据库（%d 字节）" % os.path.getsize(baks[0]))
 
-# 13. 文案：无文件可锁 → 不提示 chmod；有 doctor 步骤提示
+# 13. 文案：无文件可锁 → 不提示 chmod；不再宣称 doctor 会置 entry_valid
 assert adapter.readonly_hint(r.dst_path) == "", "SQLite 分支不是文件，不应提示 chmod"
-assert adapter.publish_hint() == "openclaw doctor --fix"
-print("✓ 文案产品化（readonly_hint 为空 / publish_hint=doctor --fix）")
+assert "entry_valid=1" in adapter.activation_hint()
+assert "置 entry_valid" not in adapter.activation_hint(), "entry_valid 已由本适配器写 1，doctor 不负责"
+print("✓ 文案产品化（readonly_hint 为空 / entry_valid 归属说明正确）")
 
-# 14. 体检
+# 14. 体检：entry_valid 项必须**真读库**（旧实现恒 True = 假阳性）；压缩事件项同理
 items = {i.name: i for i in adapter.verify_storage()}
 assert items["OpenClaw SQLite 转录库"].level == "L2"
 assert items["行存储契约 (session_id, seq) → event_json"].ok
-print("✓ verify_storage 三层")
+assert items["会话节点 entry_valid"].ok, items["会话节点 entry_valid"].detail
+assert "全部 entry_valid=1" in items["会话节点 entry_valid"].detail
+assert items["压缩事件 (event_zstd)"].ok
+print("✓ verify_storage：entry_valid 真读库（%d 项）" % len(items))
 
 # 15. 注销：连带清掉库里的节点与窗口
 adapter.unregister_branch(NEW)

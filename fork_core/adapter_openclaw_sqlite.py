@@ -13,6 +13,10 @@
      后续是同样词汇的 `model_change` / `message` / `custom` 条目，
      同样带 `id` / `parentId` 树。所以抽象层可以做到零语义损失。
 
+版本基线：**2026.11.3**（旧基线 2026.9.9）。2026.11.x 的差异由产品源码 / 二进制核验
+（DDL 与写入投影 `bindSessionNode`、读取侧 `session-entry-read.worker` 均已对照），
+体现在 ②（entry_valid 与血缘等式）和"已知边界"（zstd 压缩事件）两处。
+
 存储契约（**一个会话需要 7 张表**，缺一即不可用 —— 全部由实测确定）：
 
   | 表 | 作用 | 分支侧要写什么 |
@@ -25,18 +29,30 @@
   | session_transcript_index_state | **投影进度**（indexed_seq / leaf_event_id / needs_rebuild） | 见下 |
   | session_nodes | session_key → current_session_id + entry_json | 新行 |
 
-  ⚠️ 两条实测踩出来的坑（都是"少一张表就卡住"）：
+  ⚠️ 两条必知契约（② 的旧结论已按 2026.11.3 源码订正，见下）：
 
   ① **`session_transcript_index_state` 不能省**。漏掉它，会话**能被列出**，但运行时
      会报 `Session transcript projection is rebuilding: <id>` 并拒绝执行 ——
      因为没有投影进度，系统认为需要重建。补齐（indexed_seq = 已投影最大 seq、
      leaf_event_id、active_event_count / active_message_count 与实际行数一致）后即正常。
 
-  ② **`session_nodes.entry_valid` 必须由官方置 1**。表上有 AFTER INSERT 触发器
-     `UPDATE session_nodes SET entry_valid = 0`，即**任何直接写入的节点都标记为
-     "待校验"**。此时 CLI 会拒绝：`invalid persisted session row requires repair`。
-     解法：写入后跑一次官方 `openclaw doctor --fix`（它会校验 entry_json 并把
-     entry_valid 置回 1）。本适配器不自行伪造该标志 —— 校验权归产品。
+  ② **`session_nodes.entry_valid` 由写入方自己写 1**（2026.11.3 事实，已订正）。
+     旧版本（≤2026.9.x）表上有 AFTER INSERT 触发器把 entry_valid 置 0（"待校验"），
+     官方迁移 `migrateCanonicalSessionWriterValidation` 已把 legacy 触发器全部 DROP；
+     2026.11.3 的 `session_nodes` **没有任何触发器**，列定义是
+     `NOT NULL DEFAULT 0 CHECK IN (-1,0,1)`，官方写入投影 `bindSessionNode` **内联
+     `entry_valid: 1`**。读取侧 `session-entry-read.worker` 严格
+     `if (row.entry_valid !== 1 || row.pending_key !== null || row.invalid_metadata) throw
+     "invalid persisted session row requires repair"`；而 `doctor` 的变换器对干净行是
+     no-op（**不会**把 0 改成 1）。故本适配器直接写 1 —— 不写 1 分支必然读不出来。
+     推论：也**不要**往 `session_canonical_validation_pending` 写行（进队列会挡住续跑）。
+
+     血缘列与 `entry_json` 必须自洽（2026.11.3 新增 `validateCanonicalSessionRowEntry`，
+     read / admission 两种模式都生效）：
+       `parent_session_key     == entry.parentSessionKey ?? entry.spawnedBy`
+       `spawned_by             == entry.spawnedBy`
+       `fork_source_session_key == entry.forkSource?.sessionKey`
+     故本适配器把谱系**同时**写进 entry（见 `_copy_session_rows`）。
 
   **产物是活的**：真机实测，Python 造出的分支被 `openclaw sessions` 列出、
   `openclaw agent --session-key` 正常续跑（事件数 20 → 35），且 OpenClaw 自己
@@ -45,7 +61,11 @@
 已知边界（如实记录）：
   - 依赖**未公开的内部表结构**，随 OpenClaw 版本变化可能失效；写入失败时应
     回退到 JSONL 后端或提示用户升级适配器。
-  - 需要用户在写入后执行一次 `openclaw doctor --fix`（entry_valid 由产品校验）。
+  - **压缩事件读不出来（明确报错，不静默）**：OpenClaw 2026.11.3 起默认开 zstd，
+    事件 JSON ≥1024B 落成 `event_json = NULL, event_zstd = <zstd 字节>`（读侧官方用
+    `coalesce(event_json, decode(event_zstd))`）。本适配器**未引入 zstd 依赖**，故读到
+    `event_json IS NULL` 的行会直接抛 `ForkError`（见 `_rows_for_session`），
+    **绝不**把它当成坏行/空行继续跑 —— 否则会静默产出一个缺事件的坏分支。
   - 不维护 `session_transcript_fts*`（全文检索索引）：该表无触发器，
     缺失只影响会话内搜索，不影响会话加载与会话续跑（实测未触发问题）。
   - 不做"树路径抽取"：与 JSONL 后端一致，截断是 `seq < cut` 前缀。
@@ -61,6 +81,7 @@ import uuid
 
 from .adapter_base import dumps_safe, parse_jsonl
 from .adapter_openclaw import OpenClawJsonlAdapter, BRANCH_KEY_PREFIX
+from .engine import ForkError  # 压缩事件必须"响一声"而不是静默变坏行
 from .models import SessionMeta, VerifyItem
 
 DB_NAME = "openclaw-agent.sqlite"
@@ -223,18 +244,43 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
     # ------------------------------------------------------------------
     # C. 读写（行存储契约：(session_id, seq) → event_json）
     # ------------------------------------------------------------------
-    def read_lines(self, ref: str) -> list[dict]:
-        if ref in self._pending:
-            return self._pending[ref]
-        db, sid = parse_ref(ref)
+    def _rows_for_session(self, db: str, sid: str) -> list:
+        """读出一个会话的全部事件行（按 seq），**压缩事件在此处明确报错**。
+
+        2026.11.3 起产品默认开 zstd：事件 JSON ≥1024B 落成
+        `event_json = NULL, event_zstd = <zstd>`（表上 CHECK 约束保证"二者恰有其一"）。
+        本适配器未引入 zstd 依赖（待用户决策），因此**只能**如实报错 ——
+        若把 NULL 当空/坏行继续跑，会静默产出一个"少了最大几条事件"的坏分支，
+        比直接失败危险得多（读侧官方是 `coalesce(event_json, decode(event_zstd))`）。
+        """
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         try:
+            # event_zstd 是 2026.11.x 才有的列：旧库（2026.9.x）没有它，
+            # 直接写进 SQL 会 "no such column"。故按实际列集选查询，兼容两代 schema。
+            cols = [d[0] for d in con.execute("SELECT * FROM transcript_events LIMIT 0").description]
+            zstd_expr = "event_zstd IS NOT NULL" if "event_zstd" in cols else "0"
             rows = con.execute(
-                "SELECT event_json FROM transcript_events WHERE session_id=? ORDER BY seq",
+                f"SELECT event_json, {zstd_expr} AS zstded "
+                "FROM transcript_events WHERE session_id=? ORDER BY seq",
                 (sid,),
             ).fetchall()
         finally:
             con.close()
+        zstd_rows = sum(1 for r in rows if r[0] is None or r[1])
+        if zstd_rows:
+            raise ForkError(
+                f"该会话含 zstd 压缩事件（event_zstd）：{zstd_rows} 条事件的 event_json 为 NULL"
+                "（OpenClaw 2026.11.x 默认把 ≥1024B 的事件压缩落盘）。当前版本未启用 zstd 解码，"
+                "为避免静默产出一个缺事件的坏分支，这里直接停下。"
+                "请升级到支持压缩事件的版本（或先用 `openclaw` 侧工具改写该会话）。"
+            )
+        return rows
+
+    def read_lines(self, ref: str) -> list[dict]:
+        if ref in self._pending:
+            return self._pending[ref]
+        db, sid = parse_ref(ref)
+        rows = self._rows_for_session(db, sid)
         # 逐个容错解析：DB 里也可能有坏行（半写/上游写坏），一个坏行不该让整轮体检崩
         # （防御性：本机真库实测 0 例，见 adapter_base.parse_jsonl 的证据等级说明）。
         # 坏行的**行号按"第几条事件"计**（seq 升序的序号）——与 at_seq 同一口径。
@@ -250,14 +296,7 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         if ref in self._pending:
             return ParseResult(objs=self._pending[ref], bad_lines=[])
         db, sid = parse_ref(ref)
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            rows = con.execute(
-                "SELECT event_json FROM transcript_events WHERE session_id=? ORDER BY seq",
-                (sid,),
-            ).fetchall()
-        finally:
-            con.close()
+        rows = self._rows_for_session(db, sid)
         objs, bad = [], []
         for i, r in enumerate(rows, 1):
             res = parse_jsonl(r[0] if isinstance(r[0], str) else str(r[0]))
@@ -370,22 +409,37 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
             "active_event_count,active_message_count,updated_at) VALUES (?,?,?,0,?,?,?)",
             (new_id, cut - 1, lines[-1].get("id") if lines else None, ev_cnt, msg_cnt, now_ms),
         )
-        # 7. 会话节点（entry_valid 交由产品校验：触发器会先置 0）
+        # 7. 会话节点
+        #    entry_valid 必须**自己写 1**（2026.11.3 无触发器；官方写入投影 bindSessionNode
+        #    也内联写 1；读侧 `entry_valid !== 1` 直接判 "requires repair"，而 doctor 对
+        #    干净行是 no-op）。写 0 会让分支必然读不出来。
         sn_cs = self._cols(cur, "session_nodes")
         src_node = cur.execute(
             "SELECT * FROM session_nodes WHERE current_session_id=?", (src_id,)).fetchone()
         if src_node:
             d = {k: src_node[k] for k in sn_cs}
+            src_key = src_node["session_key"]
             entry = json.loads(d["entry_json"]) if d.get("entry_json") else {}
             entry.update({"sessionId": new_id, "updatedAt": now_ms, "sessionStartedAt": now_ms})
+            # 谱系**必须同时进 entry**：2026.11.3 的 validateCanonicalSessionRowEntry 在
+            # read / admission 两种模式下都校验三条等式（列 ←→ entry_json）：
+            #   ① parent_session_key      == entry.parentSessionKey ?? entry.spawnedBy
+            #   ② spawned_by              == entry.spawnedBy
+            #   ③ fork_source_session_key == entry.forkSource?.sessionKey
+            entry["parentSessionKey"] = src_key
+            entry["forkSource"] = {"sessionKey": src_key, "sessionId": src_id}
+            # ②：源 entry 带 spawnedBy 时必须原样复刻到列上；源没有该字段则列为 NULL
+            # （源节点自己的 spawned_by 是「源被谁派生」，不能直接搬到分支上）。
+            spawned_by = entry.get("spawnedBy")
             d.update({
                 "session_key": new_key, "current_session_id": new_id,
                 "entry_json": dumps_safe(entry),
-                "entry_valid": 0, "updated_at": now_ms, "created_at": now_ms,
-                "fork_source_session_key": src_node["session_key"],
+                "entry_valid": 1, "updated_at": now_ms, "created_at": now_ms,
+                "fork_source_session_key": src_key,
                 "fork_source_session_id": src_id,
                 "fork_source_entry_id": None,
-                "parent_session_key": src_node["session_key"],
+                "parent_session_key": src_key,
+                "spawned_by": spawned_by,
             })
             cur.execute(
                 f"INSERT INTO session_nodes ({','.join(sn_cs)}) VALUES ({','.join('?' * len(sn_cs))})",
@@ -452,14 +506,49 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
     def verify_storage(self) -> list[VerifyItem]:
         ok = os.path.exists(self.DB_PATH)
         n = ev = 0
+        nodes = bad_nodes = zstd_ev = None  # None = 没查成（表可能不存在）
         if ok:
             try:
                 con = self._connect(readonly=True)
                 n = con.execute("SELECT COUNT(DISTINCT session_id) FROM transcript_events").fetchone()[0]
                 ev = con.execute("SELECT COUNT(*) FROM transcript_events").fetchone()[0]
+                try:
+                    nodes = con.execute("SELECT COUNT(*) FROM session_nodes").fetchone()[0]
+                    bad_nodes = con.execute(
+                        "SELECT COUNT(*) FROM session_nodes WHERE entry_valid <> 1").fetchone()[0]
+                except Exception:
+                    nodes = bad_nodes = None
+                try:
+                    zstd_ev = con.execute(
+                        "SELECT COUNT(*) FROM transcript_events WHERE event_json IS NULL"
+                    ).fetchone()[0]
+                except Exception:
+                    zstd_ev = None
                 con.close()
             except Exception:
                 pass
+        # entry_valid：真读库统计（旧实现恒 True，是假阳性）
+        if nodes is None:
+            valid_ok, valid_note = False, "库中无 session_nodes 表（无法校验）"
+        else:
+            valid_ok = bad_nodes == 0
+            valid_note = (
+                f"{nodes} 个节点全部 entry_valid=1（读取侧要求 ==1，否则报 requires repair）"
+                if valid_ok else
+                f"{bad_nodes}/{nodes} 个节点 entry_valid≠1 ⇒ OpenClaw 会报 "
+                "`invalid persisted session row requires repair`；本适配器新写的分支恒为 1"
+            )
+        # 压缩事件：能读则报，读到即真问题（本版本不解 zstd，会直接抛错而不是静默）
+        if zstd_ev is None:
+            zstd_ok, zstd_note = False, "库中无 transcript_events.event_json（无法校验）"
+        else:
+            zstd_ok = zstd_ev == 0
+            zstd_note = (
+                "无压缩事件（event_json 全部有值）"
+                if zstd_ok else
+                f"{zstd_ev} 条事件为 zstd 压缩（event_json IS NULL, event_zstd 有值）"
+                "⇒ 本版本未启用 zstd 解码，读取时会明确报错（不会静默当坏行）"
+            )
         return [
             VerifyItem(
                 "OpenClaw SQLite 转录库",
@@ -474,12 +563,8 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
                 ev > 0,
                 "与 JSONL 的「行序 → 条目」同构；引擎按 seq 排序读取",
             ),
-            VerifyItem(
-                "会话节点 entry_valid",
-                "L1",
-                True,
-                "由 OpenClaw 校验后置位；分支写入后需跑一次 `openclaw doctor --fix`",
-            ),
+            VerifyItem("会话节点 entry_valid", "L1", valid_ok, valid_note),
+            VerifyItem("压缩事件 (event_zstd)", "L1", zstd_ok, zstd_note),
         ]
 
     # ------------------------------------------------------------------
@@ -487,10 +572,11 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
     # ------------------------------------------------------------------
     def activation_hint(self) -> str:
         return (
-            "OpenClaw 分支已写入 %s（7 张表，事务提交）：\n"
-            "            ① 跑一次 `openclaw doctor --fix`（让官方校验并置 entry_valid）\n"
-            "            ② `openclaw sessions --json` 即可列出；用 "
-            "`openclaw agent --session-key agent:%s:%s<8位>` 续跑"
+            "OpenClaw 分支已写入 %s（7 张表，事务提交，entry_valid=1）：\n"
+            "            ① `openclaw sessions --json` 即可列出；用 "
+            "`openclaw agent --session-key agent:%s:%s<8位>` 续跑\n"
+            "            ② （可选）跑一次 `openclaw doctor` 做官方自检 —— entry_valid 已由"
+            "本适配器直接写 1，doctor 不是必需步骤"
             % (os.path.basename(self.DB_PATH), self.AGENT_ID, BRANCH_KEY_PREFIX)
         )
 

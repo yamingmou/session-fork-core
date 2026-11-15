@@ -108,7 +108,10 @@ with open(other_path, "w", encoding="utf-8") as f:
     for l in other_lines:
         f.write(json.dumps(l, ensure_ascii=False) + "\n")
 
-# --- 最小 state_5.sqlite：threads 用**真实 38 列**（防止测试比现实更宽松）---
+# --- 最小 state_5.sqlite：threads 列取真机实测集 + 0.169 新增列 ---
+# 真机 0.150.0-alpha.8 实测 38 列；0.169 新增 attached_thread_parent_id ⇒ 本 fixture 39 列。
+# （完整列集：0.161 = 42 列 / 0.169 = 43 列。fixture 只放测试用得到的列，但**不得**比
+#  现实更宽松：新增列必须显式出现在这里，否则适配器"漏写新列"就测不出来。）
 THREAD_COLS = [
     ("id", "TEXT PRIMARY KEY"), ("rollout_path", "TEXT NOT NULL"),
     ("created_at", "INTEGER NOT NULL"), ("updated_at", "INTEGER NOT NULL"),
@@ -132,7 +135,10 @@ THREAD_COLS = [
     ("name", "TEXT"), ("is_pinned", "INTEGER NOT NULL DEFAULT 0"),
     ("thread_section_id", "TEXT"), ("section_position", "INTEGER"),
     ("section_entered_at_ms", "INTEGER"), ("project_id", "TEXT"),
+    # 0.169 新增列（0.161 → 0.169 只多这一列）：附属线程父链接
+    ("attached_thread_parent_id", "TEXT"),
 ]
+assert len(THREAD_COLS) == 39, f"fixture 应为 38(实测) + 1(0.169 新增) = 39 列，此处 {len(THREAD_COLS)}"
 con = sqlite3.connect(os.path.join(tmpdir, "state_5.sqlite"))
 con.execute(f"CREATE TABLE threads ({', '.join(f'{c} {t}' for c, t in THREAD_COLS)})")
 for sid, path, ts in ((SRC_ID, src_path, 1789369781), (OTHER_ID, other_path, 1788105191)):
@@ -140,10 +146,13 @@ for sid, path, ts in ((SRC_ID, src_path, 1789369781), (OTHER_ID, other_path, 178
         "INSERT INTO threads (id, rollout_path, created_at, updated_at, source, "
         "model_provider, cwd, title, sandbox_policy, approval_mode, cli_version, "
         "first_user_message, memory_mode, model, history_mode, preview, recency_at, "
-        "created_at_ms, recency_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "created_at_ms, recency_at_ms, attached_thread_parent_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, path, ts, ts, "exec", "ollama", f"/tmp/work/{sid}", "测试标题",
          '{"type":"read-only"}', "never", "0.150.0-alpha.8", "只回复两个字：收到",
-         "disabled", "qwen2.5:3b", "paginated", "只回复两个字：收到", ts, ts * 1000, ts * 1000))
+         "disabled", "qwen2.5:3b", "paginated", "只回复两个字：收到", ts, ts * 1000, ts * 1000,
+         # 源是 0.169 的 "attached thread"：分支不能继承这个父链接
+         "parent-attached-thread-0001"))
 con.commit()
 con.close()
 
@@ -198,6 +207,23 @@ n_user = sum(1 for o in src_lines if adapter.is_user_message(o))
 n_asst = sum(1 for o in src_lines if adapter.is_assistant_message(o))
 assert (n_user, n_asst) == (1, 1), f"轮次计数错误：user={n_user} asst={n_asst}（镜像重复会翻倍）"
 print("✓ 轮次计数不翻倍（event_msg 镜像族被排除）")
+
+# 白名单对齐产品自己的判定集（contextual_user_message::is_contextual_user_fragment）
+from fork_core.adapter_codex import _INJECTION_PREFIXES  # noqa: E402
+
+for marker in ("<user_shell_command>", "<turn_aborted>",
+               "<sub" "agent_notification>",   # 拆开写：字面词根会被发布前关键词检查误报
+               "<agent_message_board_notification>", "<skill>"):
+    assert marker in _INJECTION_PREFIXES, f"产品判定集里的注入标签缺失：{marker}"
+assert "<app-context>" not in _INJECTION_PREFIXES, "<app-context> 在 0.161/0.169 均 0 命中（死条目）"
+assert "<skill>" in _INJECTION_PREFIXES and "<skills_instructions>" in _INJECTION_PREFIXES, \
+    "两个都保留：一个来自产品判定集，一个是既有实测项"
+# 防御性条目（0.169 新标签，role 未证；加了无害，漏了可能落错截断点）
+assert "<model_instructions>" in _INJECTION_PREFIXES and "<mcp_tools>" in _INJECTION_PREFIXES
+# role=developer 的标签不必放进来（本来就不会被 is_user_message 命中）
+assert "<side_conversation>" not in _INJECTION_PREFIXES
+assert "<command_sessions>" not in _INJECTION_PREFIXES
+print(f"✓ _INJECTION_PREFIXES 对齐产品判定集（{len(_INJECTION_PREFIXES)} 条，无 <app-context>）")
 
 # get_text
 assert adapter.get_text(src_lines[3]) == "只回复两个字：收到"
@@ -294,6 +320,11 @@ assert row["title"] == "分支·测试" and row["preview"] == "分支·测试"
 assert row["history_mode"] == "paginated", "分支自包含完整历史 → paginated"
 assert row["archived"] == 0 and row["is_pinned"] == 0
 assert row["source"] == "exec" and row["model_provider"] == "ollama", "应与源行一致"
+# 0.169 新增列：分支必须是独立线程，不能继承源的 attached_thread_parent_id
+assert row["attached_thread_parent_id"] is None, "分支不得继承附属线程父链接（0.169）"
+src_att = sqlite3.connect(os.path.join(tmpdir, "state_5.sqlite")).execute(
+    "SELECT attached_thread_parent_id FROM threads WHERE id=?", (SRC_ID,)).fetchone()[0]
+assert src_att == "parent-attached-thread-0001", "源行不得被改动（源只读铁律）"
 # rollout_path 必须在 CODEX_HOME 之内（实测：在外则 codex 拒绝，code -32600）
 assert row["rollout_path"].startswith(tmpdir + os.sep), "rollout_path 必须在 $CODEX_HOME 内"
 print("✓ register_branch（threads 新行：显式列名、绝对路径、home 内）")
