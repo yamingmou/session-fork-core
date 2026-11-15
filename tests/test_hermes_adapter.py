@@ -161,6 +161,18 @@ V31_NEW_COLUMNS = {
     ],
 }
 
+#: v0.23.1（schema **32/33**）新增的列 —— 出处是上游 tag `v0.23.1`（commit `3b42157`）的
+#: `hermes_state_common.py` 里 `SCHEMA_SQL.sessions` 建表语句：`sessions` 62→**65**，
+#: 新增的正是这三个 `INTEGER NOT NULL DEFAULT 0`；`messages` 30 列**未变**。
+#: 上游这两版怎么落地：v32 只"记账"（列由 `_reconcile_columns()` 的
+#: `ALTER TABLE … ADD COLUMN` 从 SCHEMA_SQL 补齐），v33 是纯数据迁移（只 `UPDATE model_config`
+#: 补 `_delegate_from`，无 DDL）⇒ 32 与 33 的表形状相同，故两者共用一个增量。
+V32_NEW_COLUMNS = [
+    ("runtime_revision", "INTEGER NOT NULL DEFAULT 0"),
+    ("runtime_generation", "INTEGER NOT NULL DEFAULT 0"),
+    ("transcript_revision", "INTEGER NOT NULL DEFAULT 0"),
+]
+
 
 def build_db(path, schema_version=30):
     con = sqlite3.connect(path)
@@ -174,6 +186,9 @@ def build_db(path, schema_version=30):
         for table, cols in V31_NEW_COLUMNS.items():
             for col_name, col_decl in cols:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_decl}")
+    if schema_version >= 32:
+        for col_name, col_decl in V32_NEW_COLUMNS:
+            con.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_decl}")
     con.execute("INSERT INTO schema_version (version) VALUES (?)", (schema_version,))
     con.commit()
     con.close()
@@ -231,11 +246,13 @@ print()
 print("=== 2. 版本闸：高危版本必须拒绝写（且 fail-fast，无副作用）===")
 adapter_bad = get_adapter("hermes")
 os.rename(DB, DB + ".bak")
-build_db(DB, schema_version=99)
+# 用**紧邻白名单上界**的 34（而不是 99）：白名单是 (30,31,32,33)，"再多一版"正是
+# 白名单机制必须继续拦住的那个位置；99 与 34 走同一条判定，测 34 才有意义。
+build_db(DB, schema_version=34)
 seed_source(DB)
 try:
     create_fork(adapter_bad, session_ref=SRC, line_no=4, name="闸门测试", backups_dir=BK)
-    raise AssertionError("schema_version=99 时应当拒绝写入")
+    raise AssertionError("schema_version=34 时应当拒绝写入")
 except Exception as e:
     assert "schema_version" in str(e), f"错误信息应说明版本，实为 {e}"
     print(f"✓ 拒绝写入：{str(e)[:60]}…")
@@ -330,6 +347,99 @@ print(f"✓ sessions 新列随行复制：created_source={row31['created_source'
 
 os.remove(DB)
 os.rename(DB + ".bak31", DB)
+
+print()
+print("=== 3.6 v0.23.1（schema 33）：闸门放行，且三个计数器必须归零（不继承源行）===")
+# 出处：上游 tag v0.23.1（commit 3b42157）—— `SCHEMA_VERSION = 33`、`sessions` 65 列。
+# 真机上"只认 30/31"的白名单会把用户直接拦下（拒绝本身是保护，但对用户是"分支打不出来"）。
+# 本条固化三件事：① 33 在白名单里、写路径放行；② fixture 的表形状与上游记录一致（65 / 30）；
+# ③ 三个新计数器取 0（产品自己发布子行的 SQL 里这三列不在列清单 ⇒ 子行取表默认值 0）。
+os.rename(DB, DB + ".bak33")
+build_db(DB, schema_version=33)
+seed_source(DB)
+
+# 表形状断言：锁住**我们声称的**形状（65 / 30），防止 DDL 增量和上游记录脱节
+# （例如有人改了 V31/V32_NEW_COLUMNS 却忘了列数会变）。它证明的是 fixture 的忠实度，
+# 不是上游的真实列数 —— 后者的判据记在上面 V32_NEW_COLUMNS 的注释里。
+_shape_con = sqlite3.connect(DB)
+try:
+    n_sess_cols = len(_shape_con.execute("SELECT * FROM sessions LIMIT 0").description)
+    n_msg_cols = len(_shape_con.execute("SELECT * FROM messages LIMIT 0").description)
+finally:
+    _shape_con.close()
+assert (n_sess_cols, n_msg_cols) == (65, 30), \
+    f"synthetic v33 的表形状应与上游一致（sessions 65 / messages 30），实为 {n_sess_cols}/{n_msg_cols}"
+print(f"✓ 表形状：sessions {n_sess_cols} 列 / messages {n_msg_cols} 列（与上游 v0.23.1 的 SCHEMA_SQL 一致）")
+
+con = sqlite3.connect(DB)
+# 模拟"被产品跑过很多轮"的源会话：三个计数器都非 0，且已归档 + 自动归档。
+# 非 0 是**必须的**——否则"分支归零"和"分支继承"两种实现的断言结果相同（零覆盖）。
+con.execute("UPDATE sessions SET runtime_revision=41, runtime_generation=7, transcript_revision=93,"
+            " created_source='cli', transport_profile='local', archived=1, auto_archived=1"
+            " WHERE id=?", (SRC,))
+con.execute("UPDATE messages SET message_uid='uid-' || id WHERE session_id=?", (SRC,))
+con.commit()
+con.close()
+src_row = q(DB, "SELECT runtime_revision, runtime_generation, transcript_revision FROM sessions WHERE id=?",
+            (SRC,))[0]
+assert (src_row["runtime_revision"], src_row["runtime_generation"], src_row["transcript_revision"]) == (41, 7, 93)
+
+adapter33 = get_adapter("hermes")
+res33 = create_fork(adapter33, session_ref=SRC, line_no=4, name="v33 验收分支", backups_dir=BK)
+assert res33.ok, res33.error
+NEW33 = res33.new_id
+print(f"✓ v33 写入放行：cut={res33.cut} / replacements={res33.replacements} / verify={res33.verified}")
+assert res33.verified is True
+
+row33 = q(DB, "SELECT * FROM sessions WHERE id=?", (NEW33,))[0]
+# 血缘：与产品自身 fork 同形（两列配合）
+assert row33["parent_session_id"] == SRC, "血缘列必须指向源会话"
+assert json.loads(row33["model_config"]) == {"_branched_from": SRC}, \
+    f"标记必须与产品自身 fork 同形（只有这一个键），实为 {row33['model_config']}"
+assert row33["message_count"] == res33.cut
+assert row33["title"] == "v33 验收分支" and row33["title_source"] == "user"
+assert row33["ended_at"] is None and row33["end_reason"] is None
+print(f"✓ sessions 行：parent_session_id=源 / _branched_from=源 / message_count={row33['message_count']} / "
+      f"title={row33['title']!r} / ended_at=None")
+
+# 三个新计数器必须归零 —— 判据是产品自己发布子行的 INSERT 不含这三列（取表默认值 0）。
+assert (row33["runtime_revision"], row33["runtime_generation"], row33["transcript_revision"]) == (0, 0, 0), \
+    ("v0.23.1 新增的三个计数器不得继承源行（源为 41/7/93）："
+     f"runtime_revision={row33['runtime_revision']} "
+     f"runtime_generation={row33['runtime_generation']} "
+     f"transcript_revision={row33['transcript_revision']}")
+print("✓ 三个新计数器归零（源行是 runtime_revision=41 / runtime_generation=7 / "
+      "transcript_revision=93，未继承）")
+
+# 归档位（含 v31 的 auto_archived）同样归零
+assert (row33["archived"], row33["hidden"], row33["auto_archived"]) == (0, 0, 0), \
+    f"分支不得继承归档/隐藏态：archived={row33['archived']} hidden={row33['hidden']} " \
+    f"auto_archived={row33['auto_archived']}"
+# 其余 v31 新列仍然随行复制（动态取列的既有性质不能被本次改动破坏）
+assert row33["created_source"] == "cli" and row33["transport_profile"] == "local", \
+    f"v31 列入仍应原样复制：created_source={row33['created_source']} " \
+    f"transport_profile={row33['transport_profile']}"
+print(f"✓ 归档位归零：archived=0 hidden=0 auto_archived=0；"
+      f"其余新列仍原样复制：created_source={row33['created_source']} "
+      f"transport_profile={row33['transport_profile']}")
+
+# 消息侧：30 列未变 ⇒ 复制行为应与 v31 一致（含 BLOB 原样、session_id 全改写）
+msgs33 = q(DB, "SELECT id, session_id, content, display_identity FROM messages WHERE session_id=? ORDER BY id",
+           (NEW33,))
+assert len(msgs33) == res33.cut, f"应复制 {res33.cut} 条，实为 {len(msgs33)}"
+assert all(m["session_id"] == NEW33 for m in msgs33), "消息外键必须改写成新 id"
+assert any(isinstance(m["display_identity"], (bytes, bytearray)) for m in msgs33), \
+    "前缀内的 BLOB 行（display_identity）必须仍是 bytes"
+src_cnt = q(DB, "SELECT COUNT(*) c FROM messages WHERE session_id=?", (SRC,))[0]["c"]
+assert src_cnt == 6, f"源会话必须零改动（应为 6 条），实为 {src_cnt}"
+print(f"✓ messages：{len(msgs33)} 条、session_id 全部改写、BLOB 仍为 bytes、源会话零改动")
+
+errs33 = verify_branch(adapter33, f"{DB}#{NEW33}", NEW33, res33.cut, SRC)
+assert errs33 == [], f"v33 上 verify_branch 应零错误，实为 {errs33}"
+print("✓ verify_branch 零错误")
+
+os.remove(DB)
+os.rename(DB + ".bak33", DB)
 
 print()
 print("=== 4. 标题全局唯一（撞名必须让路，不能 IntegrityError 打死整个事务）===")
