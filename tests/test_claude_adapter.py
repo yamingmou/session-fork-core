@@ -203,6 +203,50 @@ assert adapter.is_human_turn(
                                  "content": [{"type": "tool_result", "tool_use_id": "t1"}]}}) is False
 print("✓ is_human_turn 判据边界（取宽 · 排除 meta/u3/tool_result/非 queued attachment）")
 
+# 9b. 贴了 request id 的那句话若是"排队形态"，也必须能被认出（2026-11-16 补）
+#
+# 缺口的隐蔽程度比锚点那条更高：用户贴了 id、但那句话以 attachment/queued_command 落盘，
+# 而 find_pasted_request_id 只扫 type=="user" ⇒ 返回 None ⇒ 默认切点静默接管，
+# 用户贴的 id 一声不响地失效（默认点常常"看着也差不多对"，所以更难发现）。
+from fork_core.engine import find_pasted_request_id, apply_pasted_request_id
+
+_RID = "aaaabbbb-1111-2222-3333-444444444444"
+_pasted = '{"conversationRequestId":"%s","conversationId":"s"}  从这里打分支' % _RID
+
+# 让 L2（第一轮的回答）身上就带被贴的那个 id —— 它才是用户指定的切点
+_base_pid = [
+    _u_text("第一轮的问题"),
+    {"type": "assistant", "uuid": _RID, "sessionId": "s",
+     "message": {"role": "assistant", "content": [{"type": "text", "text": "第一轮的完整回答"}]}},
+    _u_text("第二轮的问题"),
+    _a_text("第二轮的完整回答"),
+]
+
+
+def _write_rows(rows):
+    with open(_ht_path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return adapter.read_lines(_ht_path)
+
+
+# ① 正例：本轮指令是 queued_command、正文里贴了 id ⇒ 认得出、且采用它
+_lines_pid = _write_rows(_base_pid + [_queued(_pasted), _a_text("本轮叙述")])
+assert find_pasted_request_id(adapter, _lines_pid) == _RID, \
+    "排队形态里贴的 id 没被认出（改动前这里返回 None）"
+_default_pid, _, _ = locate_before_current_turn(adapter, _lines_pid)
+assert _default_pid == 4, _default_pid
+_new_pid, _note_pid = apply_pasted_request_id(adapter, _lines_pid, _default_pid, "s")
+assert _new_pid == 2, f"应采用贴的 id 切在 L2，实为 L{_new_pid}"
+assert _note_pid and "request id" in _note_pid and "L2" in _note_pid and "L4" in _note_pid, _note_pid
+print(f"✓ 排队形态贴 id：默认 L{_default_pid} → 采用后 L{_new_pid}")
+
+# ② 负例：注入行（isMeta）里贴 id，不能被当作"本轮指令"
+_lines_meta_pid = _write_rows(_base_pid + [_u_text(_pasted, isMeta=True), _a_text("本轮叙述")])
+assert find_pasted_request_id(adapter, _lines_meta_pid) is None, \
+    "isMeta 注入行不该被当成本轮指令（放宽不能放过注入行）"
+print("✓ isMeta 注入行里贴的 id 不被采纳")
+
 shutil.rmtree(_ht_dir)
 
 # 8. 清理

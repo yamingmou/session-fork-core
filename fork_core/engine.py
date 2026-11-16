@@ -204,13 +204,22 @@ _RE_PASTED_REQ_ID = re.compile(r'"conversationRequestId"\s*:\s*"([A-Za-z0-9_-]{8
 
 
 def find_pasted_request_id(adapter, lines: list[dict]) -> str | None:
-    """**本轮** user 消息里是否贴了一个 request id（= 用户明确了"切在哪一条回复"）。
+    """**本轮**消息里是否贴了一个 request id（= 用户明确了"切在哪一条回复"）。
 
-    只扫最后一条 user 消息：贴 ID 是"这次操作切哪儿"的指令，不是历史内容。
+    只扫最后一条"人发起的"消息：贴 ID 是"这次操作切哪儿"的指令，不是历史内容。
+
+    ⚠️ 这里必须用 `is_human_turn` 而**不是** `is_user_message`（2026-11-16 补）：
+    本轮指令可能以排队形态（Claude Code 的 `attachment/queued_command`）落盘，
+    那种情况下"贴了 id"就只存在于 attachment 的正文里。若仍按 `type=="user"` 找，
+    会**跳过本轮**、扫到上一轮的消息 ⇒ 本函数返回 None ⇒ 默认模式静默接管，
+    用户贴的 id 一声不响地失效（比切点错更隐蔽：默认点常常"看着也差不多对"）。
+    判据与 `locate_before_current_turn` 保持同一口径，兜底也保持一致。
     """
+    probe = getattr(adapter, "is_human_turn", None)
+    human_turn = probe if callable(probe) else adapter.is_user_message
     last_user = None
     for i, o in enumerate(lines, 1):
-        if adapter.is_user_message(o):
+        if human_turn(o):
             last_user = i
     if last_user is None:
         return None
