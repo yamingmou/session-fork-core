@@ -12,6 +12,13 @@ authors = [
     { name = "OfferKuai (Offer快) Team", email = "contact@offerkuai.com" },
 ]
 requires-python = ">=3.9"
+# zstandard：OpenClaw ≥2026.11.x 默认把 ≥1024B 的会话事件压成 zstd blob 落盘
+# （event_json=NULL + event_zstd=<blob>）。Python 3.14+ 有 stdlib `compression.zstd`
+# 时本适配器优先用它（见 adapter_openclaw_sqlite.zstd_support），3.14 以下必须靠这个
+# 包才能真解码；没有它就只能对含压缩事件的会话报错。
+dependencies = [
+    "zstandard>=0.22",
+]
 keywords = ["fork", "session", "agent", "conversation", "workbuddy", "claude-code", "branch"]
 classifiers = [
     "Programming Language :: Python :: 3",
