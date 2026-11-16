@@ -16,9 +16,11 @@ requires-python = ">=3.9"
 # （event_json=NULL + event_zstd=<blob>）。Python 3.14+ 有 stdlib `compression.zstd`
 # 时本适配器优先用它（见 adapter_openclaw_sqlite.zstd_support），3.14 以下必须靠这个
 # 包才能真解码；没有它就只能对含压缩事件的会话报错。
-dependencies = [
-    "zstandard>=0.22",
-]
+# 刻意**零运行时依赖**（2026-11-16 用户定）：技能要走 zip 分发，装依赖这条路不存在，
+# 所以不能靠 zstandard 这类 C 扩展包补能力。zstd 解码按需降级：
+# stdlib `compression.zstd`（Py3.14+）→ 系统 `zstd` 命令 → 都没有则相关功能明示不可用。
+# 打分支本身**不需要解码**（压缩行原样复制），解码只服务于预览/按文本定位。
+dependencies = []
 keywords = ["fork", "session", "agent", "conversation", "workbuddy", "claude-code", "branch"]
 classifiers = [
     "Programming Language :: Python :: 3",

@@ -61,14 +61,19 @@
 已知边界（如实记录）：
   - 依赖**未公开的内部表结构**，随 OpenClaw 版本变化可能失效；写入失败时应
     回退到 JSONL 后端或提示用户升级适配器。
-  - **压缩事件已真解码**：OpenClaw 2026.11.3 起默认开 zstd，事件 JSON ≥1024B 落成
+  - **压缩事件**：OpenClaw 2026.11.3 起默认开 zstd，事件 JSON ≥1024B 落成
     `event_json = NULL, event_zstd = <zstd 字节>`，并用 `event_utf8_bytes` 记原文长度
-    （读侧官方用 `coalesce(event_json, decode(event_zstd))`）。本适配器照做：解压实现
-    **优先取 Python 3.14+ stdlib 的 `compression.zstd`**（零依赖），退回运行时依赖
-    `zstandard`；**两级都不可用才**抛 `ForkError`（带可执行修复建议）。
-    解出的字节用 `event_utf8_bytes` 校验长度（防"静默解出半截"），不符或解压失败
-    一律带 `session_id` + `seq` 报错，**绝不**把 `event_json IS NULL` 当成坏行/空行。
-    见 `_rows_for_session` / `zstd_support`。
+    （读侧官方用 `coalesce(event_json, decode(event_zstd))`）。本适配器把"解码"与
+    "打分支"**解耦**（2026-11-16 定，理由见 `_copy_session_rows`）：
+      · **打分支不需要解码** —— 复制是**原样搬字节**（压缩行仍落成压缩行，只换
+        session_id 与首行 header.id）；`--line N` 这条路径全程不碰解码能力。
+      · **要正文才解码**：按文本定位（`--match`）/ 预览 / 体检真解一遍。解码实现
+        **零运行时依赖**：① Python 3.14+ stdlib `compression.zstd` ② 系统 `zstd`
+        命令（`shutil.which("zstd")`）③ 都没有 ⇒ 明确降级（压缩行只给元数据视图 +
+        占位正文，并记一条 note），**不再**抛错挡住整条路。
+      · 解出的字节用 `event_utf8_bytes` 校验长度（防"静默解出半截"），不符或解压
+        失败一律带 `session_id` + `seq` 报错。
+    见 `_rows_for_session` / `_copy_session_rows` / `zstd_support`。
   - 不维护 `session_transcript_fts*`（全文检索索引）：该表无触发器，
     缺失只影响会话内搜索，不影响会话加载与会话续跑（实测未触发问题）。
   - 不做"树路径抽取"：与 JSONL 后端一致，截断是 `seq < cut` 前缀。
@@ -78,12 +83,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
-import sys
+import subprocess
 import time
 import uuid
 
-from .adapter_base import dumps_safe, parse_jsonl
+from .adapter_base import dumps_safe, notify, parse_jsonl
 from .adapter_openclaw import OpenClawJsonlAdapter, BRANCH_KEY_PREFIX
 from .engine import ForkError  # 压缩事件必须"响一声"而不是静默变坏行
 from .models import SessionMeta, VerifyItem
@@ -108,19 +114,29 @@ def parse_ref(ref: str) -> tuple[str, str]:
 # zstd 解码（2026.11.x 起：≥1024B 的事件落成 event_json=NULL + event_zstd=<blob>）
 # ---------------------------------------------------------------------------
 # 读侧官方表达式是 `coalesce(event_json, decode(event_zstd))`，本适配器照做。
-# 关键是"解码能力必须能在运行环境里真找到"——找不到就明确报错，绝不把
-# event_json=NULL 当空行/坏行（那会静默产出"少了最大几条事件"的坏分支）。
+# 两条底线不变：① 绝不把 `event_json IS NULL` 当空行/坏行（那会静默产出"少了最大
+# 几条事件"的坏分支）；② 要正文时解不出来的字节**必须响一声**（带 session_id + seq）。
 #
-# 探测顺序：
+# 探测顺序（**零运行时依赖**：技能按 zip 分发，装不了 pip 包）：
 #   ① Python 3.14+ stdlib `compression.zstd`（PEP 784，零依赖，最优）
-#   ② 第三方 `zstandard`（pyproject 的运行时依赖）
-#   ③ 都没有 → ForkError（带 `pip install` 修复建议）
+#   ② 系统 `zstd` 命令（`shutil.which("zstd")`，子进程传字节）
+#   ③ 都没有 → (None, None)：要正文的路径明确降级，**打分支照常可用**（复制不解码）
 _ZSTD_MAX_OUTPUT = 256 * 1024 * 1024  # 单条事件解压上限（防御损坏/畸形 blob 炸内存）
 # None = 尚未探测；探测后是 (实现名 or None, 一次性解压函数 or None)。
-# 测试通过改这个缓存来隔离"两级都不可用"的情形，不需要真卸载包。
+# 测试通过改这个缓存来隔离"都不可用"的情形，不需要真卸载任何东西。
 _ZSTD_CACHE: tuple[str | None, object | None] | None = None
 
-ZSTD_FIX_ADVICE = 'pip install "zstandard>=0.22"'  # 报告里直接照抄就能修
+ZSTD_FIX_ADVICE = (
+    "装系统 `zstd` 命令（macOS：`brew install zstd`；Debian/Ubuntu：`apt install zstd`；"
+    "Windows：`winget install zstd`），或升级到 Python 3.14+（stdlib 自带 `compression.zstd`）"
+)  # 报告里直接照抄就能修
+
+# 压缩事件在"本机没有解码实现"时的占位标记与占位正文。
+# 为什么占位正文不用空串：引擎把"assistant 行 + 文本非空"当作完整回复的判据，
+# 空串会被读成"这条回复没有正文"⇒ 切点静默前移一格 ⇒ **少复制一段内容**而没有任何报错。
+# 显式占位文本保证"宁可多复制、不可静默少复制"，并且人一眼能看出这是降级。
+UNDECODED_KEY = "_openclaw_compressed"
+UNDECODED_TEXT = "［未解码：该事件为 zstd 压缩，本机没有可用的 zstd 解码实现］"
 
 
 def _zstd_decode_stdlib(data: bytes, limit: int) -> bytes:
@@ -132,18 +148,32 @@ def _zstd_decode_stdlib(data: bytes, limit: int) -> bytes:
         return _zstd.decompress(data)
 
 
-def _zstd_decode_pkg(data: bytes, limit: int) -> bytes:
-    import zstandard  # 运行时依赖（pyproject.dependencies）
+def _make_cli_decoder(exe: str):
+    """系统 `zstd` 命令的解压器：字节进、字节出（**不要** text=True —— 会破坏二进制）。"""
 
-    # 用**一次性**接口并显式给 max_output_size：帧头不带 content size 时，
-    # zstandard 的流式/默认接口会直接抛错 —— 而不是"能解就解"。
-    return zstandard.ZstdDecompressor().decompress(data, max_output_size=limit)
+    def decode(data: bytes, limit: int) -> bytes:
+        proc = subprocess.run(
+            [exe, "-d", "-q", "-c"],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.decode("utf-8", "replace").strip()[:200]
+            raise RuntimeError(f"zstd 命令返回 {proc.returncode}：{err}")
+        out = proc.stdout
+        if limit and len(out) > limit:
+            raise RuntimeError(f"解出 {len(out)} 字节，超过上限 {limit}")
+        return out
+
+    return decode
 
 
 def zstd_support() -> tuple[str | None, object | None]:
     """探测可用的 zstd 解压实现，返回 `(实现名, 一次性解压函数)`；都没有则 `(None, None)`。
 
     进程内只探一次（结果缓存）。解压函数签名为 `(data: bytes, limit: int) -> bytes`。
+    探测链见文件内说明：stdlib → 系统命令 → 不可用（**没有** pip 包这一级）。
     """
     global _ZSTD_CACHE
     if _ZSTD_CACHE is None:
@@ -153,13 +183,9 @@ def zstd_support() -> tuple[str | None, object | None]:
 
             impl = ("stdlib compression.zstd", _zstd_decode_stdlib)
         except Exception:
-            try:
-                import zstandard
-
-                impl = (f"zstandard {getattr(zstandard, '__version__', '')}".strip(),
-                        _zstd_decode_pkg)
-            except Exception:
-                impl = (None, None)
+            exe = shutil.which("zstd")
+            if exe:
+                impl = (f"zstd 命令 ({exe})", _make_cli_decoder(exe))
         _ZSTD_CACHE = impl
     return _ZSTD_CACHE
 
@@ -196,6 +222,10 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         self._pending: dict[str, list[dict]] = {}
         # 产物 ref → 源 ref（branch_target 时记下，finalize 时要靠它复制源行）
         self._src_of_dst: dict[str, str] = {}
+        # 降级说明（"本机没有解码实现，压缩事件正文读不到"等）——同一会话只记一次。
+        # 既进 stderr（给人看），也存在实例上（给测试与调用方核对，不靠抓 stderr）。
+        self.notes: list[str] = []
+        self._undecoded_noted: set[tuple[str, str]] = set()
 
     # ------------------------------------------------------------------
     # 内部
@@ -308,62 +338,127 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
     # ------------------------------------------------------------------
     # C. 读写（行存储契约：(session_id, seq) → event_json）
     # ------------------------------------------------------------------
-    def _rows_for_session(self, db: str, sid: str) -> list:
-        """读出一个会话的全部事件，按 seq 升序返回**每条的 JSON 原文**（str）。
+    def _raw_event_rows(self, db: str, sid: str) -> list[dict]:
+        """按 seq 升序读出原始行：**全部列、不解码**。
 
-        2026.11.3 起产品默认开 zstd：≥1024B 的事件落成
-        `event_json = NULL, event_zstd = <zstd>`，并用 `event_utf8_bytes` 记原文长度
-        （表上 CHECK 约束保证 event_json / event_zstd 恰有其一）。读侧官方是
-        `coalesce(event_json, decode(event_zstd))` —— 这里照做，解出来的字节再用
-        `event_utf8_bytes` 校验长度（这是"没静默解出半截"的唯一判据）。
-
-        一列都可能不存在的旧库（2026.9.x）必须照读：查询按**实际列集**拼，
-        不硬写 `event_zstd` / `event_utf8_bytes`。
+        列集按**实际列**取（旧库没有 `event_zstd` / `event_utf8_bytes` / 派生投影列
+        也必须照读）。顺带把 `transcript_event_identities` 的 `event_id` / `event_type`
+        / `parent_id` 挂到行上（键名加 `_` 前缀，与真实列区分）——压缩行没有正文时，
+        引擎要的树信息（id / parentId / 类型）只能从这里来。
         """
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
         try:
-            cols = [d[0] for d in con.execute("SELECT * FROM transcript_events LIMIT 0").description]
-            sel = ["seq", "event_json"]
-            for c in ("event_zstd", "event_utf8_bytes"):
-                if c in cols:
-                    sel.append(c)
+            cols = self._cols(con.cursor(), "transcript_events")
             rows = con.execute(
-                f"SELECT {','.join(sel)} FROM transcript_events WHERE session_id=? ORDER BY seq",
-                (sid,),
+                "SELECT * FROM transcript_events WHERE session_id=? ORDER BY seq", (sid,)
             ).fetchall()
+            ident: dict = {}
+            try:
+                for r in con.execute(
+                    "SELECT seq,event_id,event_type,parent_id FROM transcript_event_identities "
+                    "WHERE session_id=?", (sid,)
+                ).fetchall():
+                    ident[r["seq"]] = r
+            except Exception:
+                ident = {}  # 旧库/异常库没有身份表：只是少了 id，不影响读正文
         finally:
             con.close()
-
-        i_zstd = sel.index("event_zstd") if "event_zstd" in sel else None
-        i_len = sel.index("event_utf8_bytes") if "event_utf8_bytes" in sel else None
-        n_comp = sum(1 for r in rows if r[1] is None)
-        dec = None
-        if n_comp:
-            dec = zstd_support()[1]
-            if dec is None:
-                raise ForkError(
-                    f"该会话含 zstd 压缩事件 {n_comp} 条（event_json 为 NULL、event_zstd 有值）"
-                    "—— OpenClaw 2026.11.x 默认把 ≥1024B 的事件压缩落盘，"
-                    "而当前 Python 环境没有可用的 zstd 解码实现"
-                    f"（stdlib 也没有：`compression.zstd` 需 Python 3.14+；当前 {sys.version.split()[0]}）。"
-                    f"修复：{ZSTD_FIX_ADVICE}（正常 `pip install` 本包时会自动装上）。"
-                    "为避免静默产出一个缺事件的坏分支，这里直接停下。"
-                )
         out = []
         for r in rows:
-            seq, raw = r[0], r[1]
-            if raw is not None:
-                out.append(raw if isinstance(raw, str) else bytes(raw).decode("utf-8", "replace"))
-                continue
-            blob = r[i_zstd] if i_zstd is not None else None
-            if blob is None:
-                # event_json 与 event_zstd 双 NULL：违反产品自己的 CHECK 约束，是真坏行
-                raise ForkError(
-                    f"{sid} 的第 {seq} 条事件既没有 event_json 也没有 event_zstd"
-                    "（违反 OpenClaw 表上的 CHECK 约束）⇒ 该行已损坏，无法安全读取"
-                )
-            expected = r[i_len] if i_len is not None else None
-            out.append(self._decode_zstd_event(blob, expected, sid, seq))
+            d = {c: r[c] for c in cols}
+            idr = ident.get(d.get("seq"))
+            if idr is not None:
+                d["_event_id"] = idr["event_id"]
+                d["_event_type"] = idr["event_type"]
+                d["_parent_id"] = idr["parent_id"]
+            out.append(d)
+        return out
+
+    def _placeholder(self, row: dict) -> dict:
+        """压缩事件在"没有解码实现"时的**元数据视图**：够引擎定位，正文为空。
+
+        为什么可以这样（而不是必须解码）：产品在压缩**之前**就把定位所需的派生字段
+        算好落库了（`navigation_type` / `message_role` / `navigation_valid` 等，见
+        `deriveTranscriptPredicateFields` 的取值被 `prepareTranscriptPayload` 的
+        identity 展开一并写入），所以"这条是 assistant 消息吗"不用读正文就能答。
+        ⚠️ 反过来**读不出来的**是"这条 assistant 有没有文本"——所以只能给占位正文
+        （见 `get_text` 与 `UNDECODED_TEXT` 的说明）。
+        """
+        etype = row.get("navigation_type") or row.get("_event_type") or "message"
+        seq = row.get("seq")
+        blob = row.get("event_zstd")
+        ph = {
+            "type": etype,
+            "id": row.get("_event_id") or f"seq-{seq}",
+            "parentId": row.get("_parent_id"),
+            UNDECODED_KEY: {
+                "seq": seq,
+                "utf8_bytes": row.get("event_utf8_bytes"),
+                "zstd_bytes": len(blob) if isinstance(blob, (bytes, bytearray)) else None,
+            },
+        }
+        role = row.get("message_role")
+        if role:
+            ph["message"] = {"role": role}
+        return ph
+
+    def _record(self, msg: str) -> None:
+        """记一条**降级说明**：既进 stderr（给人看），也留在实例上（给测试/调用方核对）。"""
+        self.notes.append(msg)
+        notify(msg, quietable=False)
+
+    def _note_undecoded(self, db: str, sid: str, n: int) -> None:
+        """把"压缩事件正文读不到"这件事说清楚（同一会话只记一次）。"""
+        key = (db, sid)
+        if key in self._undecoded_noted:
+            return
+        self._undecoded_noted.add(key)
+        self._record(
+            f"该会话有 {n} 条事件为 zstd 压缩，本机没有可用的 zstd 解码实现"
+            "⇒ 这些事件的**正文读不到**：按文本定位（--match）只能命中明文事件，"
+            "预览会显示占位文本。\n"
+            "    打分支不受影响（压缩行原样复制字节）；要精确切点请直接给 --line <行号>。\n"
+            f"    需要读正文：{ZSTD_FIX_ADVICE}"
+        )
+
+    def _rows_for_session(self, db: str, sid: str) -> list:
+        """读出一个会话的全部事件，按 seq 升序 —— **引擎可见视图**。
+
+        每个元素是：
+          · `str` —— 该行事件的 JSON 原文（引擎自行解析，坏行容错沿用 parse_jsonl）；
+          · `dict` —— **压缩行 + 本机没有解码实现**时的元数据占位视图（见 `_placeholder`）。
+
+        官方读侧是 `coalesce(event_json, decode(event_zstd))`，这里照做；解出来的字节
+        再用 `event_utf8_bytes` 校验长度（这是"没静默解出半截"的唯一判据）。
+
+        ⚠️ 与旧实现的差别（2026-11-16）：旧版**没有解码实现就整条路报错**，等于把
+        "打分支"绑死在"能读懂正文"上。而打分支的复制是原样搬字节（见
+        `_copy_session_rows`），根本不需要解码 ⇒ 现在退化为**元数据视图 + 明确 note**，
+        让定位/预览降级而不是崩。
+        """
+        rows = self._raw_event_rows(db, sid)
+        n_comp = sum(1 for r in rows if r.get("event_json") is None)
+        dec = zstd_support()[1] if n_comp else None
+        if n_comp and dec is None:
+            self._note_undecoded(db, sid, n_comp)
+        out: list = []
+        for r in rows:
+            seq = r.get("seq")
+            raw = r.get("event_json")
+            if raw is None:
+                if dec is None:
+                    out.append(self._placeholder(r))
+                    continue
+                blob = r.get("event_zstd")
+                if blob is None:
+                    # event_json 与 event_zstd 双 NULL：违反产品自己的 CHECK 约束，是真坏行
+                    raise ForkError(
+                        f"{sid} 的第 {seq} 条事件既没有 event_json 也没有 event_zstd"
+                        "（违反 OpenClaw 表上的 CHECK 约束）⇒ 该行已损坏，无法安全读取"
+                    )
+                raw = self._decode_zstd_event(blob, r.get("event_utf8_bytes"), sid, seq)
+            out.append(raw if isinstance(raw, str) else bytes(raw).decode("utf-8", "replace"))
         return out
 
     @staticmethod
@@ -372,8 +467,10 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         exp = int(expected) if expected else 0
         limit = exp if exp > 0 else _ZSTD_MAX_OUTPUT
         _, dec = zstd_support()
-        if dec is None:  # 调用方已拦过，这里只兜底
-            raise ForkError(f"缺少 zstd 解码实现，无法读取 {sid} 的第 {seq} 条事件。修复：{ZSTD_FIX_ADVICE}")
+        if dec is None:  # 调用方通常已判过可用性，这里只兜底（明确报，不静默）
+            raise ForkError(
+                f"缺少 zstd 解码实现，无法读取 {sid} 的第 {seq} 条事件的正文。修复：{ZSTD_FIX_ADVICE}"
+            )
         try:
             raw = dec(blob, limit)
         except Exception as e:
@@ -399,13 +496,15 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         if ref in self._pending:
             return self._pending[ref]
         db, sid = parse_ref(ref)
-        rows = self._rows_for_session(db, sid)
         # 逐个容错解析：DB 里也可能有坏行（半写/上游写坏），一个坏行不该让整轮体检崩
         # （防御性：本机真库实测 0 例，见 adapter_base.parse_jsonl 的证据等级说明）。
         # 坏行的**行号按"第几条事件"计**（seq 升序的序号）——与 at_seq 同一口径。
         out = []
-        for text in rows:
-            out.extend(parse_jsonl(text).objs)
+        for item in self._rows_for_session(db, sid):
+            if isinstance(item, str):
+                out.extend(parse_jsonl(item).objs)
+            else:
+                out.append(item)  # 压缩行的元数据占位视图（不解码）
         return out
 
     def read_lines_checked(self, ref: str):
@@ -415,16 +514,35 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         if ref in self._pending:
             return ParseResult(objs=self._pending[ref], bad_lines=[])
         db, sid = parse_ref(ref)
-        rows = self._rows_for_session(db, sid)
         objs, bad = [], []
-        for i, text in enumerate(rows, 1):
-            res = parse_jsonl(text)
+        for i, item in enumerate(self._rows_for_session(db, sid), 1):
+            if not isinstance(item, str):
+                objs.append(item)  # 压缩行的元数据视图：不是坏行，只是没正文
+                continue
+            res = parse_jsonl(item)
             objs.extend(res.objs)
             if res.bad_lines:
                 bad.append(i)
         # bad_items 与 bad_lines 同为「第几条事件」：本后端没有"文件行号"这一层，
         # 显式给出以免引擎回退到 bad_files 而让尺度契约含糊（显式给出才不含糊）。
         return ParseResult(objs=objs, bad_lines=bad, bad_items=list(bad))
+
+    # ------------------------------------------------------------------
+    # B'. 消息判定补丁：压缩行的正文没读进来时，get_text 必须**明确**而不是空串
+    # ------------------------------------------------------------------
+    def get_text(self, obj: dict) -> str:
+        if isinstance(obj, dict) and UNDECODED_KEY in obj:
+            # 为什么不用空串（这是刻意选择，不是偷懒）：引擎判"完整回复边界"用的是
+            # `is_assistant_message(o) and get_text(o).strip()`，空串会让这条压缩行
+            # 被当成"没有文本的 assistant"⇒ 切点前移一格 ⇒ **静默少复制一段内容**。
+            # 显式占位文本保证方向是"宁可多复制"，且降级对人可见（stderr 另有一条 note）。
+            return UNDECODED_TEXT
+        return super().get_text(obj)
+
+    def extract_title_hint(self, lines: list[dict]) -> str:
+        """标题只从**读得到正文**的条目取（别把占位文本当标题的原料）。"""
+        readable = [o for o in lines if not (isinstance(o, dict) and UNDECODED_KEY in o)]
+        return super().extract_title_hint(readable)
 
     def read_raw(self, ref: str) -> str:
         """读出「每行一条 JSON」的等价文本，**仅供引擎的行数 / 解析 / 残留校验复用**。
@@ -477,6 +595,85 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
             con.close()
         # 分支的 header.id 已由引擎的 rewrite_ids 换过，库内 header 与之一致
 
+    # ------------------------------------------------------------------
+    # C'. 写一行转录事件：三种形态（明文重写 / header 改写 / 原样搬）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _plain_row(cs, has_utf8, has_nav, new_id, obj, now_ms) -> dict:
+        """按引擎给的对象写明文（无源行可用时的兜底，等同旧实现）。"""
+        text = dumps_safe(obj)
+        d = {"session_id": new_id, "event_json": text, "created_at": now_ms}
+        if "event_zstd" in cs:
+            d["event_zstd"] = None
+        if has_utf8:
+            d["event_utf8_bytes"] = len(text.encode("utf-8"))
+        if has_nav:
+            d["navigation_json"] = None
+        return d
+
+    @staticmethod
+    def _header_row(row, cs, has_utf8, has_nav, new_id, obj) -> dict:
+        """首行 header：只在**明文**上改 session id（header 从不会被压缩）。
+
+        派生投影列原样保留（`navigation_type='session'` 等与改 id 无关），但
+        `event_utf8_bytes` 必须按新明文重算、`navigation_json` 置 NULL ——
+        产品自己的 identity 形态就是 "明文 + navigation_json=NULL"，读侧
+        `storedProjectionSql` 在 navigation_json 为 NULL 时回退到 event_json。
+        """
+        d = {k: row[k] for k in cs}
+        d["session_id"] = new_id
+        d["event_json"] = dumps_safe(obj)
+        if "event_zstd" in cs:
+            d["event_zstd"] = None
+        if has_utf8:
+            d["event_utf8_bytes"] = len(d["event_json"].encode("utf-8"))
+        if has_nav:
+            d["navigation_json"] = None
+        return d
+
+    def _verbatim_row(self, row, cs, new_id, src_id, seq) -> dict:
+        """源行**原样搬**，只换 `session_id`（列全拷：含派生投影列 / 压缩字节）。
+
+        唯一会被改写的例外：**压缩行的压缩字节里确实出现源会话 id**（字面量，
+        `bytes.find` 判得出，不需解码）。这种行必须改写，改写就必然要解码 ⇒
+        没有解码实现时**明确报错点名 seq**，绝不放过去（放过 = 分支里留残留 id，
+        体检会判它结构性残留，而用户当时看到的是"打分支成功"）。
+        """
+        d = {k: row[k] for k in cs}
+        d["session_id"] = new_id
+        if row.get("event_json") is not None:
+            # 明文行：源 id 是否残留由引擎在**解析后的对象**上判（`content`/`data` 等
+            # _RAW_KEYS 豁免），这里不额外改写 —— 保持"有残留就拒绝落位"的既有契约。
+            return d
+        blob = row.get("event_zstd")
+        if not isinstance(blob, (bytes, bytearray)) or src_id.encode("utf-8") not in blob:
+            return d
+        if zstd_support()[1] is None:
+            raise ForkError(
+                f"源 seq={seq}（第 {seq + 1} 行）的事件是 zstd 压缩的，且压缩字节里含源会话 id "
+                f"{src_id} ⇒ 这行必须改写，而本机没有可用的 zstd 解码实现，改不了。\n"
+                f"    出路①：{ZSTD_FIX_ADVICE}，然后重跑；\n"
+                f"    出路②：用 --line {seq} 把切点放到这条事件之前（那条路径完全不需要解码）。\n"
+                "    为什么停下：原样搬会把这个 id 留在分支里，体检会判它结构性残留。"
+            )
+        text = self._decode_zstd_event(blob, row.get("event_utf8_bytes"), src_id, seq)
+        rewritten, n = self.rewrite_ids([json.loads(text)], src_id, new_id)
+        if not n:
+            # id 只出现在 _RAW_KEYS 保护的内容字段里（如 custom 条目的 data.sessionId）
+            # ⇒ 与引擎同一口径：保留原文，原样搬。
+            return d
+        new_text = dumps_safe(rewritten[0])
+        d["event_json"] = new_text
+        if "event_zstd" in cs:
+            d["event_zstd"] = None
+        if "event_utf8_bytes" in cs:
+            d["event_utf8_bytes"] = len(new_text.encode("utf-8"))
+        if "navigation_json" in cs:
+            # 改写后原文变了，旧投影的字节统计不再自洽 ⇒ 置 NULL，让读侧回退到 event_json
+            # （这正是产品 identity 形态：明文 + navigation_json=NULL）。
+            d["navigation_json"] = None
+        return d
+
     def _copy_session_rows(self, con, src_id, new_id, new_key, lines, cut, now_ms) -> None:
         cur = con.cursor()
 
@@ -503,25 +700,56 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
             "created_at": now_ms, "updated_at": now_ms,
             "transcript_updated_at": now_ms, "transcript_observed_at": now_ms,
         })
-        # 2. 转录本体（引擎已截断 + 换 header.id，这里按 seq 顺序落库）
-        #    分支一律**写明文 event_json**（不压缩）：event_zstd 留 NULL 即满足产品的
-        #    "二者恰有其一" CHECK；若该代 schema 有 event_utf8_bytes 列，按产品口径
-        #    补上原文长度（读侧也用它做长度校验，写对了才自洽）。
+        # 2. 转录本体：**原样搬**（2026-11-16 定，口径与理由见下）
+        #
+        #    "打分支 = 定位 + 复制"：源行是明文就搬明文，源行是 zstd 压缩就搬压缩
+        #    （event_json 仍 NULL、event_zstd 原样、event_utf8_bytes 原样、派生投影列
+        #    原样）——**唯一必须改的是首行 header 的 session id**，而 OpenClaw 的 header
+        #    行永不被压缩（`prepareTranscriptPayload` 遇到 header 直接短路返回 identity），
+        #    所以改它不需要任何解码能力。
+        #
+        #    旧实现把解析后的 dict 重新序列化成明文（注释里写"分支一律写明文"），
+        #    于是**必须先解码整份会话**才能打分支 —— 前提是反的：复制不需要读懂内容。
+        #    代价是没装 zstd 时连 `--line` 都打不出分支（用户 2026-11-16 指出并纠正）。
         te_cs = self._cols(cur, "transcript_events")
         has_utf8_col = "event_utf8_bytes" in te_cs
+        has_nav_col = "navigation_json" in te_cs
+        src_rows = cur.execute(
+            "SELECT * FROM transcript_events WHERE session_id=? AND seq<? ORDER BY seq",
+            (src_id, cut),
+        ).fetchall()
+        aligned = len(src_rows) == cut
+        if not aligned:
+            # 行与 seq 不再一一对应（源库缺行/坏行被引擎跳过）⇒ 退回"按引擎给的行重写"。
+            # 必须**说出来**：静默重编会让产物与源在字节层悄悄不同，而这正是本版要避免的。
+            notify(f"源库 seq<{cut} 的行数（{len(src_rows)}）≠ 待写事件数（{cut}），"
+                   f"该段按明文重写而非原样搬（源会话可能有坏行/缺行）", quietable=False)
+        n_copied_compressed = 0
         for seq, obj in enumerate(lines):
-            text = dumps_safe(obj)
-            if has_utf8_col:
-                cur.execute(
-                    "INSERT INTO transcript_events "
-                    "(session_id,seq,event_json,created_at,event_utf8_bytes) VALUES (?,?,?,?,?)",
-                    (new_id, seq, text, now_ms, len(text.encode("utf-8"))),
-                )
+            row = {k: src_rows[seq][k] for k in te_cs} if aligned else None
+            if row is None:
+                d = self._plain_row(te_cs, has_utf8_col, has_nav_col, new_id, obj, now_ms)
+            elif seq == 0 and obj.get("type") == "session":
+                # 首行 header：引擎的 rewrite_ids 已换过 id，直接按它写明文；
+                # 源的压缩相关列清空（header 本来也没被压缩，这里只是显式守住 CHECK）。
+                d = self._header_row(row, te_cs, has_utf8_col, has_nav_col, new_id, obj)
             else:
-                cur.execute(
-                    "INSERT INTO transcript_events (session_id,seq,event_json,created_at) VALUES (?,?,?,?)",
-                    (new_id, seq, text, now_ms),
-                )
+                d = self._verbatim_row(row, te_cs, new_id, src_id, seq)
+                if row.get("event_json") is None:
+                    n_copied_compressed += 1
+            cur.execute(
+                f"INSERT INTO transcript_events ({','.join(te_cs)}) "
+                f"VALUES ({','.join('?' * len(te_cs))})",
+                [d[k] for k in te_cs],
+            )
+        if n_copied_compressed and zstd_support()[1] is None:
+            # 压缩行的正文没解码，就没法在内容层核对"源 id 是否还在"（压缩字节不是明文，
+            # `bytes.find` 对**非字面量**的 id 天然搜不到）。这是本版**已知的覆盖面缺口**，
+            # 明确说出来，而不是让体检日后突然变红却没人知道为什么。
+            self._record(
+                f"分支里有 {n_copied_compressed} 条 zstd 压缩事件按原样字节复制（未解码）"
+                "⇒ 这些行没有参与内容层的源 id 核对；需要逐字核对请先装 zstd 再重打分支"
+            )
         # 3/4. 反规范化索引 + 投影行：随事件裁剪
         dup("transcript_event_identities", {"session_id": new_id}, extra=f"seq < {cut}")
         dup("session_transcript_active_events", {"session_id": new_id}, extra=f"event_seq < {cut}")
@@ -683,7 +911,10 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
                 f"{bad_nodes}/{nodes} 个节点 entry_valid≠1 ⇒ OpenClaw 会报 "
                 "`invalid persisted session row requires repair`；本适配器新写的分支恒为 1"
             )
-        # 压缩事件：现在有解码能力 ⇒ **真解一遍**，解不了才判红（判红会拉起 --verify 退出码）
+        # 压缩事件：有解码能力就**真解一遍**（解不出=数据坏了，判红）；没有解码实现
+        # 则**不判红**——打分支不需要解码（压缩行原样复制），缺的只是"读正文"这项能力，
+        # 标 review 让人知道、但不拉 `--verify` 的退出码（常驻红会让闸门失效）。
+        zstd_review = False
         if zstd_rows is None:
             zstd_ok, zstd_note = False, "读不到 transcript_events 的压缩列（无法校验）"
         elif not zstd_rows:
@@ -694,10 +925,13 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
         else:
             impl_name, dec = zstd_support()
             if dec is None:
-                zstd_ok = False
+                zstd_ok = True
+                zstd_review = True
                 zstd_note = (
                     f"{len(zstd_rows)} 条事件为 zstd 压缩（event_json IS NULL, event_zstd 有值），"
-                    f"但当前环境没有 zstd 解码实现 ⇒ 读这些会话会直接报错。修复：{ZSTD_FIX_ADVICE}"
+                    "本机没有可用的 zstd 解码实现 ⇒ 这些事件的**正文读不到**"
+                    "（--match / 预览降级为占位文本）。打分支不受影响（压缩行原样复制字节）。"
+                    f"需要正文时：{ZSTD_FIX_ADVICE}"
                 )
             else:
                 broken = None
@@ -728,7 +962,7 @@ class OpenClawSqliteAdapter(OpenClawJsonlAdapter):
                 "与 JSONL 的「行序 → 条目」同构；引擎按 seq 排序读取",
             ),
             VerifyItem("会话节点 entry_valid", "L1", valid_ok, valid_note),
-            VerifyItem("压缩事件 (event_zstd)", "L1", zstd_ok, zstd_note),
+            VerifyItem("压缩事件 (event_zstd)", "L1", zstd_ok, zstd_note, review=zstd_review),
         ]
 
     # ------------------------------------------------------------------
