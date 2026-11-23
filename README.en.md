@@ -26,6 +26,13 @@ What gets forked was never just a conversation: **tasks, plans, code, writing, r
 - Version: **see the Release badge at the top** (not written here — a hand-written version always drifts from the tag)
 - **Changelog**: see [CHANGELOG.md](CHANGELOG.md) — every release is written in four parts (value / what's new / changes / verification), and "verification" tells you **how to check it yourself**
 
+> **Want to continue a session in a *different* product?** Use [session-tape](https://github.com/yamingmou/session-tape) —
+> it consumes this project's adapter layer and does cross-product *migration*: conversation text only
+> (role / content / time). Tool calls, attachments and reasoning traces stay behind, because every
+> product stores them differently — reproducing them elsewhere would be fabrication, not fidelity.
+>
+> The split in one line: **this project branches inside one product; session-tape migrates between products.**
+
 ## What gets forked — and what doesn't
 
 A fork copies **the session's context**. It does not roll the world back. Read this one boundary before you rely on it.
