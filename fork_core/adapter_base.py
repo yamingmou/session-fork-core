@@ -212,6 +212,16 @@ class TranscriptionAdapter:
     # ------------------------------------------------------------------
     # A. 定位
     # ------------------------------------------------------------------
+    def new_session_id(self) -> str:
+        """生成新会话 id。**默认 uuid4**（与历史行为一致）。
+
+        ⚠️ 有些产品的 id 有**自己的形态**，不符合形态产品就不认：实测 OpenCode 用
+        `ses_` + 24 位字母数字，拿 UUID 建出来的会话库里有行、`session list` 却不列。
+        这类产品覆盖本方法即可。
+        """
+        import uuid as _uuid
+        return str(_uuid.uuid4())
+
     def find_transcript(self, session_id: str) -> tuple[Optional[str], Optional[str]]:
         """定位会话 transcript 文件。返回 (path, workspace_slug)；找不到返回 (None, None)。"""
         raise NotImplementedError

@@ -1038,7 +1038,7 @@ def create_fork(
             why = "显式 --whole" if (whole and running == src_id) else "未检出会话内上下文"
             how = f"whole · 最后一条完整 assistant 回复末尾（{why}）"
 
-    new_id = str(uuid.uuid4())
+    new_id = adapter.new_session_id()   # 产品 id 形态不同（如 OpenCode 的 ses_…）
     if name is None:
         hint = adapter.extract_title_hint(lines)
         name = f"分支·{hint}" if hint else "分支"

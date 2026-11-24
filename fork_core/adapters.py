@@ -37,6 +37,7 @@ _SPECS: dict[str, tuple[str, str]] = {
     "pi": ("adapter_pi", "PiAdapter"),
     "codex": ("adapter_codex", "CodexAdapter"),
     "hermes": ("adapter_hermes", "HermesAdapter"),
+    "opencode": ("adapter_opencode", "OpenCodeAdapter"),
 }
 
 #: 展示/报错顺序（含多后端产品 openclaw）
@@ -47,6 +48,7 @@ _ORDER: tuple[str, ...] = (
     "openclaw",
     "codex",
     "hermes",
+    "opencode",
 )
 
 #: 同一产品存在多个介质后端的产品（不在 _SPECS 里，走各自的分支）
