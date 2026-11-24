@@ -74,19 +74,18 @@ session-fork/
 │   ├── cli.py                  # 命令行解析与输出
 │   ├── adapters.py             # adapter 注册表（工厂）
 │   ├── adapter_base.py         # TranscriptionAdapter 接口
-│   ├── adapter_workbuddy.py         # WorkBuddy（默认）
-│   ├── adapter_claude_code.py       # Claude Code
-│   ├── adapter_codex.py             # Codex
-│   ├── adapter_hermes.py            # Hermes
-│   ├── adapter_pi.py                # pi
-│   ├── adapter_openclaw.py          # OpenClaw ≤2026.6.x（JSONL 后端）
-│   └── adapter_openclaw_sqlite.py   # OpenClaw ≥2026.9.x（SQLite 后端）
+│   ├── adapter_*.py                 # 每个产品一个 adapter（清单不在这里列）
+│   │                                # 真值源：`python3 -m fork_core.cli --help`
+│   │                                # 的 --adapter 可选值，或 adapters.available()
 └── tests/                      # 自测（仅源码仓库有；安装包里不含）
 ```
 
 - 核心逻辑（默认/--match/--line/--request-id 定位、结构化 id 替换、完整性校验）全部在引擎层，与存储格式无关；
 - 每个产品只实现一个 adapter（接口组：定位/消息判定/读写/注册/文案/体检），格式差异被完全隔离；
-- 未来新增产品支持 = 新增一个 adapter 文件，引擎零改动（旧 adapter 亦无需改动，走基类默认实现）。
+- 未来新增产品支持 = 新增一个 adapter 文件，引擎零改动（旧 adapter 亦无需改动，走基类默认实现）；
+  只有产品 id 有自己的形态时才需覆盖 `new_session_id()`（如 OpenCode 的 `ses_…`）。
+- ⚠️ **产品清单不要写在本文件里**：那是唯一会腐烂的枚举。清单的真值源是 `adapters._SPECS`，
+  `--adapter` 可选值与 `available()` 都由它派生——加产品不必改本文件。
 
 ## 触发条件
 
