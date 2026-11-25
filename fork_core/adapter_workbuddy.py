@@ -302,7 +302,7 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             extra={k: row[k] for k in row.keys() if k not in ("id", "custom_title", "status", "created_at", "cwd")},
         )
 
-    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None, prefix_fp: str | None = None) -> None:
+    def register_branch(self, src: SessionMeta, new_id: str, dst_path: str, name: str, parent_id: str = None, at_seq: int = None, prefix_fp: str | None = None, status: str | None = None) -> None:
         # 顺序调整（2026-09-04 事务化改造，原则：失败态落在无害侧）：
         # 先写旁路谱系、后写 db——db 失败时 db 无副作用（无悬空行），
         # lineage 孤儿条目由调用方 unregister 兜底清除；若 db 先写、lineage 后写，
@@ -323,7 +323,9 @@ class WorkBuddyAdapter(TranscriptionAdapter):
             vals = {c: src_row.get(c) for c in cols}
             vals["id"] = new_id
             vals["custom_title"] = name
-            vals["status"] = "terminated"
+            # 默认 terminated = "冻结在切点"（打分支的语义）；
+            # 迁移进来的会话是**要接着聊**的，调用方传 status="completed"。
+            vals["status"] = status or "terminated"
             vals["created_at"] = now_ms
             vals["updated_at"] = now_ms
             vals["last_activity_at"] = now_ms
